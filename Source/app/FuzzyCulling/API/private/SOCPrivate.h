@@ -9,11 +9,11 @@
 #pragma once
 
 #include <memory>
-#include "Common/CompilerSpecificSIMD.h"
+#include "../../Common/CompilerSpecificSIMD.h"
 
 
-#include "Util/RapidRasterizer/RapidRasterizer.h"
-#include "Util/RapidRasterizer/OccluderQuad.h"
+#include "../../Util/RapidRasterizer/RapidRasterizer.h"
+#include "../../Util/RapidRasterizer/OccluderQuad.h"
 
 namespace SDOCCommon
 {

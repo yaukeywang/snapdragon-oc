@@ -6,15 +6,15 @@
 //
 //============================================================================================================
 #include "SOCPrivate.h"
-#include "SDOCAPI.h"
+#include "../SDOCAPI.h"
 #include <vector>
 #if defined(SDOC_NATIVE)
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #endif
-#include "Common/MathUtil.h"
-#include "Common/SOCUtil.h"
+#include "../../Common/MathUtil.h"
+#include "../../Common/SOCUtil.h"
 
 
 #if defined(SDOC_ANDROID_ARM)
@@ -23,7 +23,7 @@
 #include <unistd.h>
 #include <fstream>
 #endif
-#include "Util/RapidRasterizer/OccluderQuad.h"
+#include "../../Util/RapidRasterizer/OccluderQuad.h"
 
 #if defined(SDOC_NATIVE_DEBUG)&& defined(SDOC_NATIVE)
 #include <thread>

@@ -5,12 +5,12 @@
 //                              SPDX-License-Identifier: BSD-3-Clause
 //
 //============================================================================================================
-#include "API/SDOCAPI.h"
+#include "../SDOCAPI.h"
 #include "SOCPrivate.h"
-#include "Common/SOCUtil.h"
-#include "Common/MathUtil.h"
-#include "Util/RapidRasterizer/OccluderQuad.h"
-#include "Util/RapidRasterizer/RapidRasterizer.h"
+#include "../../Common/SOCUtil.h"
+#include "../../Common/MathUtil.h"
+#include "../../Util/RapidRasterizer/OccluderQuad.h"
+#include "../../Util/RapidRasterizer/RapidRasterizer.h"
 
 using namespace SOC;
 
@@ -490,7 +490,7 @@ bool sdocSync(void * pSDOC, unsigned int id, void *param)
 	return true;
 }
 
-VISIBLE_SYMBOL bool sdocQueryOccludees_OBB(void* pSDOC, const float* bbox, unsigned int nMesh, bool* results)
+bool sdocQueryOccludees_OBB(void* pSDOC, const float* bbox, unsigned int nMesh, bool* results)
 {
 	SOCPrivate* instance = (SOCPrivate*)pSDOC;
 	if (instance == nullptr)

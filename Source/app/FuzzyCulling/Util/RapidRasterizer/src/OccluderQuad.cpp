@@ -9,7 +9,7 @@
 
 
 #include "../OccluderQuad.h"
-#include "MeshReducer.h"
+#include "../MeshReducer.h"
 
 #if defined(SDOC_WIN)
 #pragma warning(disable : 4996)
@@ -21,7 +21,7 @@
 #include <iostream>
 #include <sstream>
 #include <mutex>
-#include "MathUtil.h"
+#include "../../../common/MathUtil.h"
 
 
 #if defined(SDOC_WIN)
@@ -29,9 +29,10 @@
 #endif
 
 #if defined(SDOC_NATIVE)
-#include "Util/RapidRasterizer/MeshReducer.h"
-#include "SOCUtil.h"
+#include "../MeshReducer.h"
+#include "../../../common/SOCUtil.h"
 #include <unordered_map>
+#include <chrono>
 #endif
 namespace SDOCUtil
 {

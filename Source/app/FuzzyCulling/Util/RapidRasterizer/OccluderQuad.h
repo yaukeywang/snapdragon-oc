@@ -22,7 +22,7 @@
 
 #include <vector>
 #include <string>
-#include "Common/CompilerSpecificSIMD.h"
+#include "../../Common/CompilerSpecificSIMD.h"
 
 namespace SDOCUtil
 {

@@ -3086,12 +3086,13 @@ bool Rasterizer::readBackDepth(unsigned char *target, SDOCCommon::DumpImageMode 
 			}
 		}
 
-#if defined(SDOC_WIN)
+#if defined(SDOC_WIN) && !defined(SDOC_SRC_IN_ENGINE)
 		//debug data
 		if (ShowOccludeeInDepthMap && PrintOccludeeState && mOccludeeResults.size() > 0) 
 		{
 			std::string developerGoldData = "..\\..\\GOLDEN_DATA\\Output\\";
-			mkdir(developerGoldData.c_str());
+			//_mkdir(developerGoldData.c_str());
+			std::system(("mkdir " + developerGoldData).c_str());
 
 			std::string file_name = developerGoldData + std::to_string(this->m_width) + "_" + std::to_string(this->m_height) + ".log";
 			LOGI("filename %s", file_name.c_str());

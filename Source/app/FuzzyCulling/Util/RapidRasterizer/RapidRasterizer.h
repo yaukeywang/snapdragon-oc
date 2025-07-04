@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include "Common/SOCUtil.h"
+#include "../../Common/SOCUtil.h"
 
 
 namespace SDOCUtil

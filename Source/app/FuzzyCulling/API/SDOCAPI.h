@@ -8,28 +8,30 @@
 
 #pragma once
 
-#if defined(SDOC_LIB_EXPORT)
-	#if defined(__ANDROID__) || defined(__APPLE__)
-	#define VISIBLE_SYMBOL __attribute__((__visibility__("default")))
-	#elif defined(_WIN64) || defined(_WIN32)
-	#define VISIBLE_SYMBOL __declspec(dllexport)
-	#endif
+#if defined(SDOC_SRC_IN_ENGINE)
+    #define VISIBLE_SYMBOL
+#elif defined(SDOC_LIB_EXPORT)
+    #if defined(__ANDROID__) || defined(__APPLE__)
+        #define VISIBLE_SYMBOL __attribute__((__visibility__("default")))
+    #elif defined(_WIN64) || defined(_WIN32)
+        #define VISIBLE_SYMBOL __declspec(dllexport)
+    #endif
 #else
-	#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__) /** Windows */
-	#if defined(__GNUC__)
-	#define VISIBLE_SYMBOL __attribute__((dllimport))
-	#else
-	#define VISIBLE_SYMBOL __declspec(dllimport)
-	#endif // __GNUC__
-	#elif defined(__GNUC__)
-	#if __GNUC__ >= 4 /** GCC 4.x has support for visibility options */
-	#define VISIBLE_SYMBOL __attribute__((visibility("default")))
-	#else
-	#define VISIBLE_SYMBOL
-	#endif // __GNUC__
-	#else
-	#error "Unknown case"
-	#endif
+    #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        #if defined(__GNUC__)
+            #define VISIBLE_SYMBOL __attribute__((dllimport))
+        #else
+            #define VISIBLE_SYMBOL __declspec(dllimport)
+        #endif
+    #elif defined(__GNUC__)
+        #if __GNUC__ >= 4
+            #define VISIBLE_SYMBOL __attribute__((visibility("default")))
+        #else
+            #define VISIBLE_SYMBOL
+        #endif
+    #else
+        #error "Unknown platform for VISIBLE_SYMBOL"
+    #endif
 #endif
 
 
@@ -106,8 +108,10 @@ typedef void(*PFN_sdocRenderBakedOccluder)(void * pSDOC, void *compressedModel, 
 
 
 
+#if defined(SDOC_LIB_EXPORT)
 extern "C"
 {
+#endif
 	/*******************************************************************************************************************************
 	 *   sdocInit
 	 *   @brief
@@ -353,4 +357,6 @@ extern "C"
 	*******************************************************************************************************************************/
 	VISIBLE_SYMBOL void sdocRenderBakedOccluder(void * pSDOC, unsigned short *compressedModel, const float *localToWorld);
 
+#if defined(SDOC_LIB_EXPORT)
 }
+#endif

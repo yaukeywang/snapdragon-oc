@@ -5,16 +5,16 @@
 //                              SPDX-License-Identifier: BSD-3-Clause
 //
 //============================================================================================================
-#include "Util/RapidRasterizer/RapidRasterizer.h"
+#include "../RapidRasterizer.h"
 
 #include "Rasterizer.h"
 
-#include "MathUtil.h"
+#include "../../../common/MathUtil.h"
 #if defined(SDOC_NATIVE)
 #include <string>
 #endif
 #include <fstream>
-#include "OccluderQuad.h"
+#include "../OccluderQuad.h"
 
 namespace SDOCUtil
 {

@@ -169,8 +169,9 @@ public:
 	int mInvalidRawMeshNum = 0;
 	int mInvalidRawMeshGroup = 0;
 	void ConfigQueryChildData(uint16_t* value);
-private:
-	bool RasterizeOccludeeMesh(OccluderInput* occ, const float* worldAABB);
+	bool RasterizeOccludeeMesh(OccluderInput* occ, const float* worldAABB, const float* vertexMinExtents);
+
+	float mMinExtentsTemp[6];
 };
 
 } // namespace util

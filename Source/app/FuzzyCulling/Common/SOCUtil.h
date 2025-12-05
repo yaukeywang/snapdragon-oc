@@ -276,6 +276,7 @@ public:
 	FILE *mFileWriter = nullptr;
 
 	std::mutex mWriteMutex;
+	void RecordOccludee(const float* vertices, int  nVert);
 };
 
 } // namespace common

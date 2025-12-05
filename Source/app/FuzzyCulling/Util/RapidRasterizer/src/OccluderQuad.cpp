@@ -21,7 +21,7 @@
 #include <iostream>
 #include <sstream>
 #include <mutex>
-#include "../../../common/MathUtil.h"
+#include "../../../Common/MathUtil.h"
 
 
 #if defined(SDOC_WIN)
@@ -2510,7 +2510,7 @@ std::system(("mkdir " + outputSaveDirectory).c_str());
 				float dx = extentsf[0];
 				float dy = extentsf[1];
 				float dz = extentsf[2];
-				float superFlatRatio = GetSuperFlatOccldueeRatio();
+				float superFlatRatio = SDOCCommon::GetSuperFlatOccldueeRatio();
 				if ((dz < std::min(dx, dy) * superFlatRatio) ||
 					(dx < std::min(dy, dz) * superFlatRatio) ||
 					(dy < std::min(dx, dz) * superFlatRatio) )

@@ -168,6 +168,14 @@ public:
 		}
 
 	};
+	struct OccludeeOne
+	{
+		float data[3];
+	};
+	struct OccludeeFour
+	{
+		float data[12];
+	};
 	struct CapturedFrameData
 	{
 		float CameraPos[3];
@@ -177,6 +185,8 @@ public:
 
 		std::vector<OccluderData*>  Occluders;
 		std::vector<OccluderData*>  OccludeeMeshes;
+		std::vector<OccludeeOne*>  OccludeeOneSet;
+		std::vector<OccludeeFour*>  OccludeeFourSet;
 		std::vector<OccludeeBatch*> Occludees;
 		~CapturedFrameData()
 		{
@@ -188,13 +198,21 @@ public:
 			for (int i = 0; i < OccludeeMeshes.size(); i++) {
 				delete OccludeeMeshes[i];
 			}
+			for (int i = 0; i < OccludeeOneSet.size(); i++) {
+				delete OccludeeOneSet[i];
+			}
+			for (int i = 0; i < OccludeeFourSet.size(); i++) {
+				delete OccludeeFourSet[i];
+			}
 
 			for (int i = 0; i < Occludees.size(); i++) {
-				OccludeeBatch* occ = Occludees[i];
-				delete occ;
+				delete Occludees[i];
 			}
 
 			Occluders.clear();
+			OccludeeMeshes.clear();
+			OccludeeOneSet.clear();
+			OccludeeFourSet.clear();
 			Occludees.clear();
 		}
 
@@ -237,7 +255,21 @@ public:
 		}
 		return false;
 	}
-
+	void loadBatchedOccludee4(std::ifstream& fin, std::vector<OccludeeFour*>& batches) 
+	{
+		OccludeeFour* batch = new OccludeeFour(); batches.push_back(batch);
+		float* arr = batch->data;
+		fin >> arr[0] >> arr[1] >> arr[2];  arr += 3;
+		fin >> arr[0] >> arr[1] >> arr[2];  arr += 3;
+		fin >> arr[0] >> arr[1] >> arr[2];  arr += 3;
+		fin >> arr[0] >> arr[1] >> arr[2];
+	}
+	void loadBatchedOccludee1(std::ifstream& fin, std::vector<OccludeeOne*>& batches)
+	{
+		OccludeeOne* batch = new OccludeeOne(); batches.push_back(batch);
+		float* arr = batch->data;
+		fin >> arr[0] >> arr[1] >> arr[2]; 
+	}
 	void loadBatchedOccludee(std::ifstream& fin, std::vector<OccludeeBatch*>& batches, int perUnitSize)
 	{
 		std::string line;
@@ -434,6 +466,14 @@ public:
 			{
 				loadOccluder(fin, f.Occluders, f.OccludeeMeshes, line.find("Query") != std::string::npos);
 			}
+			else if (line.find("Batched Occludee4") != std::string::npos)
+			{
+				loadBatchedOccludee4(fin, f.OccludeeFourSet);
+			}
+			else if (line.find("Batched Occludee1") != std::string::npos)
+			{
+				loadBatchedOccludee1(fin, f.OccludeeOneSet);
+			}
 			else if (line.find("Batched Occludee") != std::string::npos)
 			{
 				loadBatchedOccludee(fin, f.Occludees, 6);
@@ -591,6 +631,12 @@ void ReplayFrame(SDOCLoader* dataProvider, int mode, int frameNum, int saveFrame
 				visibleNum += (int)(allResults[idx] == true);
 			}
 		}
+		for (auto& batch : frame->OccludeeFourSet) {
+			visibleNum += sdocQueryOccludeeQuad(pSDOC, batch->data);
+		}
+		for (auto& batch : frame->OccludeeOneSet) {
+			visibleNum += sdocQueryOccludeeSinglePoint(pSDOC, batch->data);
+		}
 		for (int occIdx = 0; occIdx < frame->OccludeeMeshes.size(); occIdx++)
 		{
 			bool visible = false;
@@ -600,16 +646,16 @@ void ReplayFrame(SDOCLoader* dataProvider, int mode, int frameNum, int saveFrame
 			{
 				{
 					if (occ->Indices == nullptr) {
-						visible = sdocQueryOccludeeMesh(pSDOC, (float*)(occ->CompactData), nullptr, 0, 0, occ->localToWorld, true, nullptr);
+						visible = sdocQueryOccludeeMesh(pSDOC, (float*)(occ->CompactData), nullptr, 0, 0, occ->localToWorld, true, nullptr, nullptr);
 					}
 					else {
-						visible = sdocQueryOccludeeMesh(pSDOC, occ->Vertices, occ->Indices, occ->VerticesNum, occ->nIdx, occ->localToWorld, occ->backfaceCull, nullptr);
+						visible = sdocQueryOccludeeMesh(pSDOC, occ->Vertices, occ->Indices, occ->VerticesNum, occ->nIdx, occ->localToWorld, occ->backfaceCull, nullptr, nullptr);
 					}
 				}
 			}
 			else
 			{
-				visible = sdocQueryOccludeeMesh(pSDOC, (float*)(occ->CompactData), nullptr, 0, 0, occ->localToWorld, true, nullptr);
+				visible = sdocQueryOccludeeMesh(pSDOC, (float*)(occ->CompactData), nullptr, 0, 0, occ->localToWorld, true, nullptr, nullptr);
 			}
 			visibleNum += visible;
 		}

@@ -104,6 +104,24 @@ namespace SDOCCommon
 #endif
 
 
+	void SOCFrameInfo::RecordOccludee(const float* vertices, int nVert)
+	{
+		if (mFileWriter == nullptr) {
+			return;
+		}
+		const std::lock_guard<std::mutex> lock(mWriteMutex);
+		if (nVert == 1) {
+			fprintf(mFileWriter, "%s\n", BATCHED_OCE_HEADER1.c_str());
+			fprintf(mFileWriter, "%.9g %.9g %.9g\n", vertices[0], vertices[1], vertices[2]);
+		}
+		else if (nVert == 4) {
+			fprintf(mFileWriter, "%s\n", BATCHED_OCE_HEADER4.c_str());
+			fprintf(mFileWriter, "%.9g %.9g %.9g\n", vertices[0], vertices[1], vertices[2]); vertices += 3;
+			fprintf(mFileWriter, "%.9g %.9g %.9g\n", vertices[0], vertices[1], vertices[2]); vertices += 3;
+			fprintf(mFileWriter, "%.9g %.9g %.9g\n", vertices[0], vertices[1], vertices[2]); vertices += 3;
+			fprintf(mFileWriter, "%.9g %.9g %.9g\n", vertices[0], vertices[1], vertices[2]); 
+		}
+	}
 
     void SOCFrameInfo::recordOccludee(const float *vertices, unsigned int num, bool obbQuery)
     {

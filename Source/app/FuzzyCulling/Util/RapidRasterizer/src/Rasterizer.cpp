@@ -9,19 +9,17 @@
 **
 ** Code from https://github.com/rawrunprotected/rasterizer/blob/master/SoftwareRasterizer/Rasterizer.cpp under CC0 1.0 Universal (CC0 1.0) Public Domain Dedication.
 */
+#include "Rasterizer.h"
 #if defined(SDOC_NATIVE)
 #define PLATFORM_WINDOWS 1
 #endif
 #if defined(SDOC_IOS)
 #define PLATFORM_IOS 1
 #endif
-#if defined(SDOC_ANDROID_ARM)
-#define PLATFORM_ANDROID_ARM 1
-#endif
+#include <cmath>
 
 
-#if PLATFORM_WINDOWS || PLATFORM_ANDROID_ARM || PLATFORM_IOS
-#include "Rasterizer.h"
+#if PLATFORM_WINDOWS || SDOC_ANDROID_ARM || PLATFORM_ANDROID_ARM || PLATFORM_IOS
 
 #include <algorithm>
 #include <cassert>
@@ -63,6 +61,7 @@ namespace SDOCUtil
 
 	static constexpr bool bDebugForceBackfaceCullingOFF = false; //SET true to disable BFC to debug!!
 
+	static constexpr bool bDebug_QueryHizCheck128 = true;  //enable this to check hiz 8 times faster
 
 	enum RenderType {
 		Mesh = 0,
@@ -292,7 +291,17 @@ Rasterizer::Rasterizer()
 			}
 		}
 	}
-
+	if(bDebug_QueryHizCheck128)
+	{
+		mQueryValidRegion = new __m128i[7];
+		mQueryValidRegion[0] = _mm_setr_epi16(-1,  0,  0,  0,  0,  0, 0, 0);
+		mQueryValidRegion[1] = _mm_setr_epi16(-1, -1,  0,  0,  0,  0, 0, 0);
+		mQueryValidRegion[2] = _mm_setr_epi16(-1, -1, -1,  0,  0,  0, 0, 0);
+		mQueryValidRegion[3] = _mm_setr_epi16(-1, -1, -1, -1,  0,  0, 0, 0);
+		mQueryValidRegion[4] = _mm_setr_epi16(-1, -1, -1, -1, -1,  0, 0, 0);
+		mQueryValidRegion[5] = _mm_setr_epi16(-1, -1, -1, -1, -1, -1, 0, 0);
+		mQueryValidRegion[6] = _mm_setr_epi16(-1, -1, -1, -1, -1, -1,-1, 0);
+	}
 }
 
 #if defined( SUPPORT_ALL_FEATURE)
@@ -345,15 +354,19 @@ Rasterizer::~Rasterizer()
 	delete mPixelBound;
 	mPixelBound = nullptr;	
 
+	if (mQueryValidRegion != nullptr) 
+	{
+		delete[]mQueryValidRegion;
+	}
+
 }
 void Rasterizer::setResolution(unsigned int width, unsigned int height)
 {
 	m_width = width;
-
-
-
-
 	m_height = height;
+	m_widthf = static_cast<float>(width);
+	m_heightf = static_cast<float>(height);
+
 	this->m_totalPixels = m_width * m_height;
 	m_MaxCoord_WHWH = _mm_setr_epi32(m_width - 1, m_height - 1, m_width - 1, m_height - 1);
 	
@@ -1939,6 +1952,8 @@ void Rasterizer::prepareOccludeeRasterization(const float* data, OccluderRenderC
 	memcpy(occ->FullMeshInvExtents, data + 8, 8 * sizeof(float));
 }
 
+
+
 template <bool bQueryOccluder, bool bOccludeeWidth1024, bool multiThreadQuery>
 bool Rasterizer::queryVisibility(const float* minmaxf, OccluderRenderCache* occ)
 {
@@ -2350,6 +2365,61 @@ static inline int mask70(int idx)
 {
 	return (7 + idx) & 7;
 }
+//fast single point depth check
+bool Rasterizer::isPointVisible(float xf, float yf, uint16_t pointZ) {
+	uint32_t pixelMinX = static_cast<uint32_t>(std::floor(xf));
+	uint32_t pixelMinY = static_cast<uint32_t>(std::floor(yf));
+	int blockMinX = pixelMinX >> 3;
+	int blockMinY = pixelMinY >> 3;
+	//usage of hiz Max to accelerate pass check
+	int pointBlock = blockMinY * m_blocksX + blockMinX;
+	if (m_pHizMax[pointBlock] <= pointZ)
+	{
+		return true;
+	}
+	uint16_t hiz = m_pHiz[pointBlock];
+	if (hiz > pointZ)
+	{
+		return false;
+	}
+	uint64_t* pBlockDepth = m_pDepthBuffer + (pointBlock * PairBlockNum);		
+	if (PairBlockNum <= PureCheckerBoardApproach + 1)
+	{
+		if (PairBlockNum != PureCheckerBoardApproach) {
+			//below calculation is due to following data alignment take block 0, block 1 for example
+			//block1:         row6/7 depth 128 bit
+			//block1:         row4/5 depth 128 bit
+			//block1:         row2/3 depth 128 bit
+			//block1:         row0/1 depth 128 bit
+			//        block0 mask 64 bit   block1 mask 64 bit
+			//block0:         row6/7 depth 128 bit
+			//block0:         row4/5 depth 128 bit
+			//block0:         row2/3 depth 128 bit
+			//block0:         row0/1 depth 128 bit
+			pBlockDepth += (blockMinX & 1);
+		}
+		uint16_t* dy2 = (uint16_t*) (pBlockDepth + (pixelMinY & 6)); //navigate to the row
+		dy2 += pixelMinX & 6; //single pixel case, compare two locations
+		return dy2[0] <= pointZ || dy2[1] <= pointZ;
+	}
+	else {
+		pixelMinX &= 7;
+		__m128i maxZV = _mm_set1_epi16(pointZ);
+		int rowSelector = 1 << pixelMinX;
+		__m128i* startBlockDepth = (__m128i*) pBlockDepth;
+		uint16_t y = pixelMinY & 7;
+		{
+			__m128i visible = _mm_cmplt_epu16_soc(startBlockDepth[y], maxZV);
+			int visiblePixelMask = _mm_movemask_epi16_soc(visible);
+			if (rowSelector & visiblePixelMask)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+}
+
 //bQueryOccluder means query occluder
 template <bool bQueryOccluder, bool bOccludeeWidth1024>
 bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelMinY, uint32_t pixelMaxY, uint16_t maxZ)
@@ -2442,31 +2512,62 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 			if (DebugOccluderOccludee) {
 				DebugData[QueryBlockDoWhileIfSave]++;
 			}
-			int blockX = blockMinX;
-			do
-			{
-				if (DebugOccluderOccludee && !bQueryOccluder)
+			
+			if (bDebug_QueryHizCheck128 == false) {
+				int blockX = blockMinX;
+				do
 				{
-					DebugData[FastBlockDepthCompare]++;
-				}
-				if (maxZ >= pHiZ[0])
-				{
-					if (pHiZ[0] == 0)
+					if (DebugOccluderOccludee && !bQueryOccluder)
 					{
-						if (DebugOccluderOccludee && !bQueryOccluder)
-						{
-							DebugData[FastBlockEmptyPass]++;
-						}
-
-						return true;
+						DebugData[FastBlockDepthCompare]++;
 					}
-					startBlockY = blockY;
-					blockY = -1;
-					break;
-				}
-				++blockX;
-				++pHiZ;
-			} while (blockX <= blockMaxX);
+					if (maxZ >= pHiZ[0])
+					{
+						if (pHiZ[0] == 0)
+						{
+							if (DebugOccluderOccludee && !bQueryOccluder)
+							{
+								DebugData[FastBlockEmptyPass]++;
+							}
+
+							return true;
+						}
+						startBlockY = blockY;
+						blockY = -1;
+						break;
+					}
+					++blockX;
+					++pHiZ;
+				} while (blockX <= blockMaxX);
+			}
+			else {
+				int delta = blockMaxX - blockMinX;
+				__m128i validRegion = _mm_set1_epi32(-1);
+				__m128i maxZ128 = _mm_set1_epi16(maxZ);
+				do
+				{
+					if (delta < 7) {
+						validRegion = mQueryValidRegion[delta];
+					}
+					__m128i phiz128 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pHiZ));
+					if (bQueryOccluder) {
+						__m128i zero128 = _mm_and_si128(validRegion, _mm_cmpeq_epi16(phiz128, _mm_set1_epi16(0)));
+						uint64_t* zeroMask = (uint64_t*)&zero128;
+						if ((zeroMask[0] | zeroMask[1]) != 0) {
+							return true;
+						}
+					}
+					__m128i large128 = _mm_and_si128(validRegion, _mm_cmplt_epu16_soc(phiz128, maxZ128));
+					uint64_t* largeMask = (uint64_t*)&large128;
+					if ((largeMask[0] | largeMask[1]) != 0) {
+						startBlockY = blockY;
+						blockY = -1;
+						break;
+					}
+					delta -= 8;
+					pHiZ += 8;
+				} while (delta >= 0);
+			}
 			--blockY;
 			pHizOffset -= m_blocksX;
 		} while (blockY >= blockMinY);
@@ -3367,10 +3468,28 @@ void Rasterizer::precomputeRasterizationTable()
 
 			__m128i j8 = _mm_set1_epi8(j127);
 
-			__m128i mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[0]);		__m128i result = _mm_srli_epi8(mask, 7);
-					mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[1]); result = _mm_or_si128(result, _mm_slli_epi8(_mm_srli_epi8(mask, 7), 1));
-					mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[2]); result = _mm_or_si128(result, _mm_slli_epi8(_mm_srli_epi8(mask, 7), 2));
-					mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[3]); result = _mm_or_si128(result, _mm_slli_epi8(_mm_srli_epi8(mask, 7), 3));
+			//__m128i mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[0]);		__m128i result = _mm_srli_epi8(mask, 7);
+			//		mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[1]); result = _mm_or_si128(result, _mm_slli_epi8(_mm_srli_epi8(mask, 7), 1));
+			//		mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[2]); result = _mm_or_si128(result, _mm_slli_epi8(_mm_srli_epi8(mask, 7), 2));
+			//		mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[3]); result = _mm_or_si128(result, _mm_slli_epi8(_mm_srli_epi8(mask, 7), 3));
+			__m128i mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[0]);
+			__m128i result = _mm_srli_epi8(mask, 7);
+
+			mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[1]);
+			__m128i temp1 = _mm_srli_epi8(mask, 7);
+			temp1 = _mm_slli_epi8(temp1, 1);
+			result = _mm_or_si128(result, temp1);
+
+			mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[2]);
+			__m128i temp2 = _mm_srli_epi8(mask, 7);
+			temp2 = _mm_slli_epi8(temp2, 2);
+			result = _mm_or_si128(result, temp2);
+
+			mask = _mm_cmplt_epu8_soc(j8, sumJThreadK8[3]);
+			__m128i temp3 = _mm_srli_epi8(mask, 7);
+			temp3 = _mm_slli_epi8(temp3, 3);
+			result = _mm_or_si128(result, temp3);
+
 
 
 			uint32_t offsetLookup = offsetLookupTable[j];
@@ -4071,7 +4190,7 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 	}
 
 
-	if (bPixelAABBClippingQuad)
+	if (bPixelAABBClippingQuad && bDrawOccludee == false)
 	{
 		auto scale8 = _mm_set1_ps(8);
 		__m128i mask = _mm_set1_epi32((uint32_t(-1) << 16) | 7);
@@ -4283,7 +4402,7 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 		__m128 rowDepthLeftBtmOffset = _mm_add_ps(depthLeftBase, depthRowDeltaBtm);
 
 		
-		if (bPixelAABBClippingQuad)
+		if (bPixelAABBClippingQuad && bDrawOccludee == false)
 		{
 			PrimitivePixelClip->UpdatePixelAABBData(primitiveIdx, mPixelBound);
 		}
@@ -4395,7 +4514,7 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 							if (blockMask != -1)
 							{
 
-								if (bPixelAABBClippingQuad)
+								if (bPixelAABBClippingQuad && bDrawOccludee == false)
 								{
 									blockMask &= PrimitivePixelClip->GetPixelAABBMask(blockX, blockY);
 									if (blockMask == 0)
@@ -4521,7 +4640,7 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 						else if (PairBlockNum == FullBlockApproach) 
 						{
 #if defined( SUPPORT_ALL_FEATURE)
-							if (bPixelAABBClippingQuad) {
+							if (bPixelAABBClippingQuad && bDrawOccludee == false) {
 								if (blockMask != -1 && bPixelAABBClipping)
 								{
 									blockMask &= PrimitivePixelClip->GetPixelAABBMask(blockX, blockY);
@@ -4570,7 +4689,7 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 					__m128 rowDepthLeft = _mm_fmadd_ps_soc(depthDx, _mm_set1_ps((float)blockX), lineDepthLeft);
 					__m128 rowDepthRight = _mm_add_ps(depthDxHalf, rowDepthLeft);
 
-					if (blockMask != -1 && bPixelAABBClippingQuad)
+					if (blockMask != -1 && bPixelAABBClippingQuad && bDrawOccludee == false)
 					{
 						blockMask &= PrimitivePixelClip->GetPixelAABBMask(blockX, blockY);
 					}
@@ -4600,6 +4719,267 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 	while (validMask > 0);
 }
 
+bool Rasterizer::queryOccludeeQuadVisibility(const float* inVtx) {
+	__m128* localToClip = this->m_OccludeelocalToClip;
+	const __m128 lc0 = localToClip[0];
+	const __m128 lc1 = localToClip[1];
+	const __m128 lc2 = localToClip[2];
+	const __m128 lc3 = localToClip[3];
+	__m128 corners[4];
+	for (int i = 0; i < 4; ++i) {
+		__m128 vx = _mm_set1_ps(inVtx[0]);
+		__m128 vy = _mm_set1_ps(inVtx[1]);
+		__m128 vz = _mm_set1_ps(inVtx[2]);
+		corners[i] = _mm_fmadd_ps_soc(lc0, vx,
+			_mm_fmadd_ps_soc(lc1, vy,
+				_mm_fmadd_ps_soc(lc2, vz, lc3)));
+		inVtx += 3;
+	}
+	_MM_TRANSPOSE4_PS(corners[0], corners[1], corners[2], corners[3]);
+
+	// Even if all bounding box corners have W > 0 here, we may end up with some vertices with W < 0 to due floating point differences; so test with some epsilon if any W < 0.
+	__m128 closeToNearPlane = _mm_cmplt_ps(corners[3], _mm_set1_ps(mNearPlane));
+	if(!_mm_same_sign0(closeToNearPlane)) return true;
+
+	// Perspective division
+	corners[3] = _mm_rcp_ps(corners[3]);
+	corners[0] = _mm_mul_ps(corners[0], corners[3]);
+	corners[1] = _mm_mul_ps(corners[1], corners[3]);
+	corners[2] = _mm_mul_ps(corners[2], corners[3]);
+
+	// Vertical mins and maxes
+	__m128 minsX = corners[0];
+	__m128 minsY = corners[1];
+	__m128i	minsXY = _mm_cvttps_epi32(_mm_min_ps(_mm_unpacklo_ps(minsX, minsY), _mm_unpackhi_ps(minsX, minsY)));
+
+	//add safe force clamp to allow safe traversal of blocks
+	__m128i maxsXY = _mm_min_epi32(minsXY, m_MaxCoord_WHWHOccluder);
+	minsXY = _mm_max_epi32(minsXY, m_MinCoord_WHWHOccluder);
+
+	// Horizontal reduction, step 2
+	__m128i minXYMaxXYLo = _mm_unpacklo_epi32(minsXY, maxsXY);
+	__m128i minXYMaxXYHi = _mm_unpackhi_epi32(minsXY, maxsXY);
+
+	__m128i boundsI[2];
+	boundsI[0] = _mm_min_epi32(minXYMaxXYLo, minXYMaxXYHi);
+	boundsI[1] = _mm_max_epi32(minXYMaxXYLo, minXYMaxXYHi);
+
+
+	int* bounds = (int*)boundsI;
+
+	//frustum culling
+	//very useful for interleave mode occluder
+	if (bounds[0] > bounds[5] || bounds[2] > bounds[7])
+	{
+		return 0;
+	}
+	__m128i depth = packQueryDepth(corners[2]);
+
+	uint16_t maxZ = _mm_max_epu16_even(depth);
+	uint32_t minX = bounds[0];
+	uint32_t maxX = bounds[5];
+	uint32_t minY = bounds[2];
+	uint32_t maxY = bounds[7];
+	return query2D<true, false>(minX, maxX, minY, maxY, maxZ);
+
+}
+bool Rasterizer::queryOccludeeSinglePointVisibility(const float* inVtx) 
+{
+	__m128* localToClip = this->m_OccludeelocalToClip;
+	__m128 point =
+		_mm_fmadd_ps_soc(localToClip[0], _mm_set1_ps(inVtx[0]),
+			_mm_fmadd_ps_soc(localToClip[1], _mm_set1_ps(inVtx[1]),
+				_mm_fmadd_ps_soc(localToClip[2], _mm_set1_ps(inVtx[2]), localToClip[3])));
+	float* pf = (float*)&point;
+	float rp = 1.0f / pf[3];
+	pf[0] *= rp;
+	pf[1] *= rp;
+	//inside the depthmap
+	if (pf[0] >= 0.0f && pf[0] < m_widthf && pf[1] >= 0.0f && pf[1] < m_heightf)
+	{
+		pf[2] *= rp;
+		uint32_t zi = ((uint32_t*)(&pf[2]))[0];
+		if (zi < 0xFFFF000) //in front of near plan
+		{
+			uint32_t depthValue = zi >> 12;
+			if (isPointVisible(pf[0], pf[1], depthValue)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+int Rasterizer::queryOccludeeMeshQuadVisibility(OccluderRenderCache* occ, const float* inVtx)
+{
+	__m128* localToClip = occ->m_localToClipPointer;
+	const __m128 lc0 = localToClip[0];
+	const __m128 lc1 = localToClip[1];
+	const __m128 lc2 = localToClip[2];
+	const __m128 lc3 = localToClip[3];
+	__m128 corners[4];
+	for (int i = 0; i < 4; ++i) {
+		__m128 vx = _mm_set1_ps(inVtx[0]);
+		__m128 vy = _mm_set1_ps(inVtx[1]);
+		__m128 vz = _mm_set1_ps(inVtx[2]);
+		corners[i] = _mm_fmadd_ps_soc(lc0, vx,
+						_mm_fmadd_ps_soc(lc1, vy,
+							_mm_fmadd_ps_soc(lc2, vz, lc3)));
+		inVtx += 3;
+	}
+
+
+	_MM_TRANSPOSE4_PS(corners[0], corners[1], corners[2], corners[3]);
+
+	bool requireClip = false;
+	// Even if all bounding box corners have W > 0 here, we may end up with some vertices with W < 0 to due floating point differences; so test with some epsilon if any W < 0.
+	__m128 closeToNearPlane = _mm_cmplt_ps(corners[3], _mm_set1_ps(mNearPlane));
+	requireClip = !_mm_same_sign0(closeToNearPlane);
+
+	//clipping is for rasterization use only
+	occ->NeedsClipping = requireClip;
+
+	// Perspective division
+	corners[3] = _mm_rcp_ps(corners[3]);
+	corners[0] = _mm_mul_ps(corners[0], corners[3]);
+	corners[1] = _mm_mul_ps(corners[1], corners[3]);
+	corners[2] = _mm_mul_ps(corners[2], corners[3]);
+
+	// Vertical mins and maxes
+	__m128 minsX = corners[0];
+	__m128 minsY = corners[1];
+	__m128i	minsXY = _mm_cvttps_epi32(_mm_min_ps(_mm_unpacklo_ps(minsX, minsY), _mm_unpackhi_ps(minsX, minsY)));
+
+	//add safe force clamp to allow safe traversal of blocks
+	__m128i maxsXY = _mm_min_epi32(minsXY, m_MaxCoord_WHWHOccluder);
+	minsXY = _mm_max_epi32(minsXY, m_MinCoord_WHWHOccluder);		
+
+	// Horizontal reduction, step 2
+	__m128i minXYMaxXYLo = _mm_unpacklo_epi32(minsXY, maxsXY);
+	__m128i minXYMaxXYHi = _mm_unpackhi_epi32(minsXY, maxsXY);
+
+	__m128i boundsI[2];
+	boundsI[0] = _mm_min_epi32(minXYMaxXYLo, minXYMaxXYHi);
+	boundsI[1] = _mm_max_epi32(minXYMaxXYLo, minXYMaxXYHi);
+
+
+	int* bounds = (int*)boundsI;
+
+	//frustum culling
+	//very useful for interleave mode occluder
+	if (bounds[0] > bounds[5] || bounds[2] > bounds[7])
+	{
+		return 0;
+	}
+	__m128i depth = packQueryDepth(corners[2]);
+	if (requireClip == false) {
+		uint16_t maxZ = _mm_max_epu16_even(depth);
+		uint32_t minX = bounds[0];
+		uint32_t maxX = bounds[5];
+		uint32_t minY = bounds[2];
+		uint32_t maxY = bounds[7];
+		if (!query2D<true, false>(minX, maxX, minY, maxY, maxZ))
+			return 0;
+		uint32_t* depthPtr = (uint32_t*)&depth;
+		float* cornerf = (float*)corners;
+		for (int idx = 0; idx < 4; idx++) {
+			float* pf = cornerf + idx;
+			if (pf[0] >= 0.0f && pf[0] < m_widthf && pf[4] >= 0.0f && pf[4] < m_heightf)
+			{
+				if (isPointVisible(pf[0], pf[4], depthPtr[idx])) {
+					return 2;
+				}
+			}
+		}
+	}
+	else {
+		uint32_t* depthPtr = (uint32_t*)&depth;
+		float* cornerf = (float*)corners;
+		for (int idx = 0; idx < 4; idx++) {
+			float* pf = cornerf + idx;
+			if (pf[12] >= 0) {
+				if (pf[0] >= 0.0f && pf[0] < m_widthf && pf[4] >= 0.0f && pf[4] < m_heightf)
+				{
+					if (isPointVisible(pf[0], pf[4], depthPtr[idx])) {
+						return 2;
+					}
+				}
+			}
+		}
+	}
+	return 1;
+}
+//for occludee rasterization mesh, if the point fall in the view frustum, 
+//compare with depth map, if the point is visible, direct declare the occludee is visible
+bool Rasterizer::queryPointVisibility(OccluderRenderCache& occluderCache, const float* inVtx, unsigned int nVert)
+{
+	__m128* localToClip = occluderCache.m_localToClipPointer;
+	const float* currVerticePtr = inVtx;
+	if (occluderCache.NeedsClipping == false) {
+		for (unsigned int idx = 0; idx < nVert; idx++) {
+			__m128 point =
+				_mm_fmadd_ps_soc(localToClip[0], _mm_set1_ps(currVerticePtr[0]),
+					_mm_fmadd_ps_soc(localToClip[1], _mm_set1_ps(currVerticePtr[1]),
+						_mm_fmadd_ps_soc(localToClip[2], _mm_set1_ps(currVerticePtr[2]), localToClip[3])));
+			float* pf = (float*)&point;
+			float rp = 1.0f / pf[3];
+			pf[0] *= rp;
+			pf[1] *= rp;
+			//inside the depthmap
+			if (pf[0] >= 0.0f && pf[0] < m_widthf && pf[1] >= 0.0f && pf[1] < m_heightf)
+			{
+				pf[2] *= rp;
+				uint32_t zi = ((uint32_t*)(&pf[2]))[0];
+				if (zi < 0xFFFF000) //in front of near plan
+				{
+					uint32_t depthValue = zi >> 12;
+					if (isPointVisible(pf[0], pf[1], depthValue)) {
+						return true;
+					}
+				}
+			}
+			currVerticePtr += 3;
+		}
+	}
+	else {
+		int totalFront = 0;
+		for (unsigned int idx = 0; idx < nVert; idx++) {
+			__m128 point =
+				_mm_fmadd_ps_soc(localToClip[0], _mm_set1_ps(currVerticePtr[0]),
+					_mm_fmadd_ps_soc(localToClip[1], _mm_set1_ps(currVerticePtr[1]),
+						_mm_fmadd_ps_soc(localToClip[2], _mm_set1_ps(currVerticePtr[2]), localToClip[3])));
+			float* pf = (float*)&point;
+			//W < 0 means fully culled by camera plane
+			if (pf[3] < 0) {
+				totalFront++;
+			}
+			else{
+				float rp = 1.0f / pf[3];
+				pf[0] *= rp;
+				pf[1] *= rp;
+				//inside the depthmap
+				if (pf[0] >= 0.0f && pf[0] < m_widthf && pf[1] >= 0.0f && pf[1] < m_heightf)
+				{
+					pf[2] *= rp;
+					uint32_t zi = ((uint32_t*)(&pf[2]))[0];
+					if (zi < 0xFFFF000) //in front of near plan
+					{
+						uint32_t depthValue = zi >> 12;
+						if (isPointVisible(pf[0], pf[1], depthValue)) {
+							return true;
+						}
+					}
+				}
+			}
+			currVerticePtr += 3;
+		}
+		//if every vertices is in front of near plan, just treat it as invisible!!!
+		if (totalFront == nVert) {
+			return true;
+		}
+	}
+	return false;
+}
+
 
 template <int RASTERIZE_CONFIG>
 void Rasterizer::rasterize(SDOCCommon::OccluderMesh& raw, OccluderRenderCache* occluderCache)
@@ -4627,6 +5007,8 @@ void Rasterizer::rasterize(SDOCCommon::OccluderMesh& raw, OccluderRenderCache* o
 		DebugData[RasterizedOccluderTotalVertices] += raw.VerticesNum;
 	}
 
+
+	
 	__m128 * mat = occluderCache->mat;
 
 
@@ -5671,8 +6053,8 @@ void Rasterizer::updateBlockWithMaxZ(__m128 rowDepthLeft, __m128 rowDepthRight, 
 #endif
 void Rasterizer::updateBlockMSCBPartial_Occludee(uint32_t* depth32, uint64_t blockMask, __m128i* out, OccluderRenderCache * cache)
 {
-#if defined(SDOC_NATIVE)
-	if (false) {
+#if defined(SDOC_NATIVE_DEBUG)
+	if (true) {
 		__m128i	depthBottom = _mm_setr_epi32(depth32[0], depth32[0], depth32[1], depth32[1]);
 		__m128i	depthTop = _mm_setr_epi32(depth32[2], depth32[2], depth32[3], depth32[3]);
 		__m128i interleavedBlockMask = _mm_unpacklo_epi8_soc(blockMask);
@@ -5696,6 +6078,7 @@ void Rasterizer::updateBlockMSCBPartial_Occludee(uint32_t* depth32, uint64_t blo
 		visible = _mm_or_si128(visible, _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[3], depthTop)));
 		cache->mRasterizedOccludeeVisible = _mm_anybit_one_soc(visible);
 		if (cache->mRasterizedOccludeeVisible) {
+			//std::cout << "*****rasterize occludee which is visible" << std::endl;
 			return;
 		}
 		return;
@@ -6238,7 +6621,7 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 				uint32_t yLoc = (uint32_t)cyf[primitiveIdx];
 				if (cxf[primitiveIdx] >= 0.0f && xLoc <= m_blocksXMinusOne && cyf[primitiveIdx] >= 0.0f && yLoc <= m_blocksYMinusOne) {
 					uint32_t xyLoc = (m_blocksX * yLoc + xLoc);
-					uint16_t max = pOffsetHiZMax[xyLoc] - 1;
+					uint16_t max = pOffsetHiZMax[xyLoc];
 					if (primitiveMinZ > max ) {
 						occluderCache->mRasterizedOccludeeVisible = true;
 						return;
@@ -6366,7 +6749,7 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 						__m128i hiZblob = _mm_loadu_si128(reinterpret_cast<const __m128i *>(pBlockRowHiZ));
 						__m128i cmpResult;
 						if(bDrawOccludee)	cmpResult  = _mm_cmple_epu16_soc(hiZblob, primitiveMaxZVi);
-						else 				cmpResult = _mm_cmplt_epu16_soc(hiZblob, primitiveMaxZVi);
+						else 				cmpResult  = _mm_cmplt_epu16_soc(hiZblob, primitiveMaxZVi);
 						uint64_t * r64 = (uint64_t *)& cmpResult;
 						uint64_t result = r64[0] & r64[1];
 
@@ -6439,7 +6822,7 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 		depthBoundsMin = (uint32_t*)&minZi;
 	}
 
-    if (bPixelAABBClipping)
+    if (bPixelAABBClipping && bDrawOccludee == false)
     {
         auto scale8 = _mm_set1_ps(8);
 		__m128i mask = _mm_set1_epi32((uint32_t(-1) << 16) | 7);
@@ -6722,7 +7105,7 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 
 		__m128 rowDepthLeftBtmOffset = _mm_add_ps(depthLeftBase, depthRowDeltaBtm);
 
-		if (bPixelAABBClipping)
+		if (bPixelAABBClipping && bDrawOccludee == false)
 		{
 			PrimitivePixelClip->UpdatePixelAABBData(primitiveIdx, mPixelBound);
 		}
@@ -6837,6 +7220,15 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 						continue;
 					}
 				}
+				else {
+					//whole block is filled for superflat case
+					if (bDrawOccludee && occluderCache->SuperFlatOccludee == true)
+					{
+						occluderCache->mRasterizedOccludeeVisible = true;
+						return;
+					}
+				}
+
 				
 
 				if (bDumpBlockColumnImage)
@@ -6868,6 +7260,15 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 					}
 					if (maxBlockDepth > pBlockRowHiZ[0])
 					{
+						if (bDrawOccludee) {
+							uint16_t minBlockDepth = depth16[minBlockIdx];
+							//comparing existing block max with current block min
+							if (pBlockRowHiZ[m_HizBufferSize] <= minBlockDepth) {
+								occluderCache->mRasterizedOccludeeVisible = true;
+								return;
+							}
+						}
+
 						uint64_t *outBlockData = outblockRowData + blockX * PairBlockNum;
 
 						uint32_t * depth32 = (uint32_t*)depth16;
@@ -6885,7 +7286,7 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 									DebugData[BlockRenderTotal]++;
 								}
 
-								if (bPixelAABBClipping)
+								if (bPixelAABBClipping && bDrawOccludee == false)
 								{
 									blockMask &= PrimitivePixelClip->GetPixelAABBMask(blockX, blockY);
 									if (blockMask == 0)
@@ -7019,7 +7420,7 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 						else if (PairBlockNum == FullBlockApproach) 
 						{
 #if defined( SUPPORT_ALL_FEATURE)
-							if (blockMask != -1 && bPixelAABBClipping)
+							if (blockMask != -1 && bPixelAABBClipping && bDrawOccludee == false)
 							{
 								blockMask &= PrimitivePixelClip->GetPixelAABBMask(blockX, blockY);
 							}
@@ -7068,7 +7469,7 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 					__m128 rowDepthLeft = _mm_fmadd_ps_soc(depthDx, _mm_set1_ps((float)blockX), lineDepthLeft);
 					__m128 rowDepthRight = _mm_add_ps(depthDxHalf, rowDepthLeft);
 
-					if (blockMask != -1 && bPixelAABBClipping)
+					if (blockMask != -1 && bPixelAABBClipping && bDrawOccludee == false)
 					{
 						blockMask &= PrimitivePixelClip->GetPixelAABBMask(blockX, blockY);
 					}
@@ -7171,7 +7572,7 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 							}
 						} while (controlY <= blockMaxY);
 						if (currentY <= blockMaxY)
-                        {
+						{
 							int dy = currentY - blockY + 1;
 							blockY = currentY;
 							pOffsetHiZ += blocksX * dy;
@@ -7479,18 +7880,18 @@ void Rasterizer::drawLine(float* p, float*q)
 			p[1] = (q[1] - p[1])  * r + p[1];
 			p[0] = 0.5f;
 		}
-		if ( (p[1] < 0 && q[1] < 0) || (p[1] >= m_height && q[1] >= m_height))
+		if ( (p[1] < 0 && q[1] < 0) || (p[1] >= m_heightf && q[1] >= m_heightf))
 		{
 			return;
 		}
-		if (q[0] >= m_width)
+		if (q[0] >= m_widthf)
 		{
-			float r = (m_width - 0.5f - p[0]) / (q[0] - p[0]);
+			float r = (m_widthf - 0.5f - p[0]) / (q[0] - p[0]);
 			q[2] = (q[2] - p[2])  * r + p[2];
 			q[1] = (q[1] - p[1])  * r + p[1];
-			q[0] = (float)m_width - 0.5f;
+			q[0] = m_widthf - 0.5f;
 		}
-		if ((p[1] < 0 && q[1] < 0) || (p[1] >= m_height && q[1] >= m_height))
+		if ((p[1] < 0 && q[1] < 0) || (p[1] >= m_heightf && q[1] >= m_heightf))
 		{
 			return;
 		}
@@ -7508,21 +7909,21 @@ void Rasterizer::drawLine(float* p, float*q)
 			p[1] = 0.5f;
 		}
 
-		if ( (p[0] < 0 && q[0] < 0) || (p[0] >= m_width && q[0] >= m_width))
+		if ( (p[0] < 0 && q[0] < 0) || (p[0] >= m_widthf && q[0] >= m_widthf))
 		{
 			return;
 		}
 
 		if (q[1] >= m_height)
 		{
-			float r = ((float)m_height - 1 - p[1]) / (q[1] - p[1]);
+			float r = (m_heightf - 1 - p[1]) / (q[1] - p[1]);
 			q[2] = (q[2] - p[2]) * r + p[2];
 			q[0] = (q[0] - p[0]) * r + p[0];
-			q[1] = (float)m_height - 0.5f;
+			q[1] = m_heightf - 0.5f;
 		}
 
 
-		if ((p[0] < 0 && q[0] < 0) || (p[0] >= m_width && q[0] >= m_width))
+		if ((p[0] < 0 && q[0] < 0) || (p[0] >= m_widthf && q[0] >= m_widthf))
 		{
 			return;
 		}

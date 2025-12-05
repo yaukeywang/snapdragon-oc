@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.4.1)
+cmake_minimum_required(VERSION 3.5)
 
 # include
 set(CMAKE_INCLUDE_CURRENT_DIR ON)

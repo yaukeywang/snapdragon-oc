@@ -10,7 +10,24 @@ The related optimizations include
 7. Memory compression during baking
 8. Potential visibility for occluder occludee object
 
-## Guidence on building SDOC for Windows, Mac, Android and iOS.
+
+#Performance config
+1. The existence of the function is to guarantee the correctness of suntemple floor which is negative scaled. If no negative scaled occlude, for max performance, developers could directly return false for below function.
+static inline bool NeedFlipFace(const float * modelWorld) 
+{
+	if (modelWorld == nullptr) return false;
+	//return true;  //direct return true if no negative scale models
+	float determinant = modelWorld[0] * (modelWorld[5] * modelWorld[10] - modelWorld[6] * modelWorld[9])
+		- modelWorld[1] * (modelWorld[4] * modelWorld[10] - modelWorld[6] * modelWorld[8])
+		+ modelWorld[2] * (modelWorld[4] * modelWorld[9] - modelWorld[5] * modelWorld[8]);
+	return determinant < 0;
+}
+2. if using RasterizeOccludeeMesh, for the fastest speed, minExtents should be provided
+3. if many static quad occludee, suggest using sdocQueryOccludeeQuad
+4. sdocQueryOccludeeSinglePoint might work for certain cases, up to users to explore
+
+ 
+## Guidance on building SDOC for Windows, Mac, Android and iOS.
 
 
 ### Windows

@@ -174,8 +174,9 @@ extern "C"
 	//worldAABB: expect 6 element float array, represent occludee mesh's world AABB MinMax
 	//SDOC would calculate meshMinExtent if input is nullptr
 	//if localToWorld is identity 4x4 matrix, developers could just set the passing parameter to be null to fast the process
+	//Refer to calculateMeshMinExtent for the calculation of minExtents
 	*******************************************************************************************************************************/
-	VISIBLE_SYMBOL bool sdocQueryOccludeeMesh(void* pSDOC, const float* vertices, const unsigned short* indices, unsigned int nVert, unsigned int nIdx, const float* localToWorld, bool enableBackfaceCull, const float* worldAABB);
+	VISIBLE_SYMBOL bool sdocQueryOccludeeMesh(void* pSDOC, const float* vertices, const unsigned short* indices, unsigned int nVert, unsigned int nIdx, const float* localToWorld, bool enableBackfaceCull, const float* worldAABB, const float* minExtents);
 
 
 	/*******************************************************************************************************************************
@@ -197,6 +198,19 @@ extern "C"
 	 *   Assumption: bbox != nullptr && nMesh > 0 && results != nullptr
 	*******************************************************************************************************************************/
 	VISIBLE_SYMBOL bool sdocQueryOccludees(void* pSDOC, const float* bbox, unsigned int nMesh, bool* results);
+	/*******************************************************************************************************************************
+	 *   sdocQueryOccludeeQuad
+	//parameters  quad's four point
+	//vertices: four points, contain 12 float: x0 y0 z0 x1 y1 z1 x2 y2 z2 x3 y3 z3
+	*******************************************************************************************************************************/
+	VISIBLE_SYMBOL bool sdocQueryOccludeeQuad(void* pSDOC, const float* vertices);	
+	/*******************************************************************************************************************************
+	 *   sdocQueryOccludeeSinglePoint
+	//parameters one single point
+	//vertices: one point, contain 3 float: x0 y0 z0
+	*******************************************************************************************************************************/
+	VISIBLE_SYMBOL bool sdocQueryOccludeeSinglePoint(void* pSDOC, const float* vertices);
+
 	/*******************************************************************************************************************************
 	 *   sdocQueryOccludees_OBB
 	 *   @brief

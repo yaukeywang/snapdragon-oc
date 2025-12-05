@@ -9,7 +9,7 @@
 
 #include "Rasterizer.h"
 
-#include "../../../common/MathUtil.h"
+#include "../../../Common/MathUtil.h"
 #if defined(SDOC_NATIVE)
 #include <string>
 #endif
@@ -269,10 +269,7 @@ static inline bool NeedFlipFace(const float * modelWorld)
 	return determinant < 0;
 }
 
-    static float GetSuperFlatOccldueeRatio() {
-        return 0.1f;
-    }
-bool RapidRasterizer::RasterizeOccludeeMesh(OccluderInput* occ, const float* worldAABB)
+bool RapidRasterizer::RasterizeOccludeeMesh(OccluderInput* occ, const float* worldAABB, const float* minExtents)
 {
 	if (worldAABB != nullptr) {
 		float* cam = m_instance->mCameraPos;
@@ -326,40 +323,63 @@ bool RapidRasterizer::RasterizeOccludeeMesh(OccluderInput* occ, const float* wor
 			this->mInvalidRawMeshNum++;
 			return true;//for invalid occluder, potential visible set as true
 		}
+		int specialHandleNum = 4;
+		if (occ->nVert == specialHandleNum) {
+			int state = m_instance->queryOccludeeMeshQuadVisibility(&cache, occ->inVtx);
+			if (state != 1) {
+				return state > 0;
+			}
+		}
 
-		float minExtents[6];
-		if (occ->modelWorld == nullptr && worldAABB != nullptr) {
-			memcpy(minExtents, worldAABB, 6 * sizeof(float));
-			minExtents[3] -= minExtents[0];
-			minExtents[4] -= minExtents[1];
-			minExtents[5] -= minExtents[2];
+		if (minExtents == nullptr) {
+			if (occ->modelWorld == nullptr && worldAABB != nullptr) {
+				memcpy(mMinExtentsTemp, worldAABB, 6 * sizeof(float));
+				mMinExtentsTemp[3] -= mMinExtentsTemp[0];
+				mMinExtentsTemp[4] -= mMinExtentsTemp[1];
+				mMinExtentsTemp[5] -= mMinExtentsTemp[2];
+			}
+			else {
+				CalculateMeshMinExtent(occ->nVert, occ->inVtx, mMinExtentsTemp);
+			}
+			minExtents = mMinExtentsTemp;
+		}
+
+		if (occ->nVert != specialHandleNum) {
+			if (m_instance->queryVisibility<true, false, false>(minExtents, &cache))
+			{
+				if (m_instance->queryPointVisibility(cache, occ->inVtx, occ->nVert)) {
+					return true;
+				}
+			}
+			else return false;
 		}
 		else {
-			CalculateMeshMinExtent(occ->nVert, occ->inVtx, minExtents);
+			__m128 extents = _mm_setr_ps(minExtents[3], minExtents[4], minExtents[5], 0);
+			__m128* localToClip = m_instance->m_OccludeelocalToClip;
+			__m128 egde0 = _mm_mul_ps_scalar_soc(localToClip[0], extents, 0);
+			__m128 egde1 = _mm_mul_ps_scalar_soc(localToClip[1], extents, 1);
+			__m128 egde2 = _mm_mul_ps_scalar_soc(localToClip[2], extents, 2);
+			cache.prepareCache(egde0, egde1, egde2);
 		}
 
+		cache.UpdateMeshInv(minExtents);
+		cache.FlipOccluderFace = NeedFlipFace(occ->modelWorld);
 
-		if (m_instance->queryVisibility<true, false, false>(minExtents, &cache))
-		{
-			cache.UpdateMeshInv(minExtents);
-			cache.FlipOccluderFace = NeedFlipFace(occ->modelWorld);
+		SDOCCommon::OccluderMesh raw;
 
-			SDOCCommon::OccluderMesh raw;
-
-			float flat_ratio = GetSuperFlatOccldueeRatio();
-			if (minExtents[5] < minExtents[3] * flat_ratio && minExtents[5] < minExtents[4] * flat_ratio) {
-				cache.SuperFlatOccludee = true;
-			}
-
-			raw.Indices = occ->inIdx;
-			raw.Vertices = occ->inVtx;
-			raw.TriangleBatchIdxNum = occ->nIdx;
-			raw.VerticesNum = occ->nVert;
-			raw.EnableBackface = occ->backfaceCull;
-
-			raw.IsOccludee = true;//occ->IsOccludee;
-			m_instance->doRasterize(raw, &cache);
+		float flat_ratio = SDOCCommon::GetSuperFlatOccldueeRatio();
+		if (minExtents[5] < minExtents[3] * flat_ratio && minExtents[5] < minExtents[4] * flat_ratio) {
+			cache.SuperFlatOccludee = true;
 		}
+
+		raw.Indices = occ->inIdx;
+		raw.Vertices = occ->inVtx;
+		raw.TriangleBatchIdxNum = occ->nIdx;
+		raw.VerticesNum = occ->nVert;
+		raw.EnableBackface = occ->backfaceCull;
+
+		raw.IsOccludee = true;//occ->IsOccludee;
+		m_instance->doRasterize(raw, &cache);
 	}
 	return cache.mRasterizedOccludeeVisible;
 }
@@ -504,7 +524,7 @@ bool RapidRasterizer::QueryRawOccludee(const float* inVtx, const unsigned short*
 	occ->IsValidRawMesh = nVert > 0 && nIdx > 0 && (nIdx % 3 == 0);
 	occ->IsRawMesh = occ->IsValidRawMesh;
 	occ->IsOccludee = true;
-	return RasterizeOccludeeMesh(occ, worldAABB);
+	return RasterizeOccludeeMesh(occ, worldAABB, nullptr);
 }
 
 
@@ -639,12 +659,7 @@ void RapidRasterizer::CalculateMeshMinExtent(unsigned int nVert, const float * v
 	memcpy(minExtent, &refMin, 3 * sizeof(float));
 	__m128 extent = _mm_sub_ps(refMax, refMin);
 	memcpy(minExtent+3, &extent, 3 * sizeof(float));
-	if (false)
-	{
-		float* minf = (float*)&refMin;
-		float* maxf = (float*)&refMax;
-		std::cout << "-------------> AABB " << vertices[0] << " " << minf[0] << " " << minf[1] << " " << minf[2] << " " << maxf[0] << " " << maxf[1] << " " << maxf[2] << std::endl;
-	}
+	
 
 }
 

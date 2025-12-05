@@ -490,6 +490,14 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 			}
 
 		};
+		struct OccludeeOne
+		{
+			float data[3];
+		};
+		struct OccludeeFour
+		{
+			float data[12];
+		};
 		struct CapturedFrameData
 		{
 			float CameraPos[3];
@@ -499,12 +507,20 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 
 			std::vector<OccluderData*>  Occluders;
 			std::vector<OccluderData*>  OccludeeMeshes;
+			std::vector<OccludeeOne*>  OccludeeOneSet;
+			std::vector<OccludeeFour*>  OccludeeFourSet;
 			std::vector<OccludeeBatch*> Occludees;
 			~CapturedFrameData()
 			{
 				for (int i = 0; i < Occluders.size(); i++) {
 					OccluderData* occ = Occluders[i];
 					delete occ;
+				}
+				for (int i = 0; i < OccludeeOneSet.size(); i++) {
+					delete OccludeeOneSet[i];
+				}
+				for (int i = 0; i < OccludeeFourSet.size(); i++) {
+					delete OccludeeFourSet[i];
 				}
 
 				for (int i = 0; i < Occludees.size(); i++) {
@@ -517,6 +533,8 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 
 				Occluders.clear();
 				OccludeeMeshes.clear();
+				OccludeeOneSet.clear();
+				OccludeeFourSet.clear();
 				Occludees.clear();
 			}
 
@@ -558,6 +576,21 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 				}
 			}
 			return false;
+		}
+		void loadBatchedOccludee4(std::ifstream& fin, std::vector<OccludeeFour*>& batches)
+		{
+			OccludeeFour* batch = new OccludeeFour(); batches.push_back(batch);
+			float* arr = batch->data;
+			fin >> arr[0] >> arr[1] >> arr[2];  arr += 3;
+			fin >> arr[0] >> arr[1] >> arr[2];  arr += 3;
+			fin >> arr[0] >> arr[1] >> arr[2];  arr += 3;
+			fin >> arr[0] >> arr[1] >> arr[2];
+		}
+		void loadBatchedOccludee1(std::ifstream& fin, std::vector<OccludeeOne*>& batches)
+		{
+			OccludeeOne* batch = new OccludeeOne(); batches.push_back(batch);
+			float* arr = batch->data;
+			fin >> arr[0] >> arr[1] >> arr[2];
 		}
 		void loadBatchedOccludee(std::ifstream& fin, std::vector<OccludeeBatch*>& batches, int perUnitSize)
 		{
@@ -765,6 +798,14 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 				{
 					loadBatchedOccludee(fin, f.Occludees, nOcludeeOBBSize);
 				}
+				else if (line.find("Batched Occludee4") != std::string::npos)
+				{
+					loadBatchedOccludee4(fin, f.OccludeeFourSet);
+				}
+				else if (line.find("Batched Occludee1") != std::string::npos)
+				{
+					loadBatchedOccludee1(fin, f.OccludeeOneSet);
+				}
 				else if (line.find("Batched Occludee") != std::string::npos) 
 				{
 					loadBatchedOccludee(fin, f.Occludees, 6);
@@ -851,6 +892,14 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 				//	std::cout << "Idx " << idx<<" " << batch->Number << " visible FAIL " << visibleNum << std::endl;
 			}
 			delete[]allResults;
+		}
+		for (int i = 0; i < frame->OccludeeOneSet.size(); i++) {
+			auto& occ = frame->OccludeeOneSet[i];
+			visibleNum += Singleton->m_rapidRasterizer->m_instance->queryOccludeeSinglePointVisibility(occ->data);
+		}
+		for (int i = 0; i < frame->OccludeeFourSet.size(); i++) {
+			auto& occ = frame->OccludeeOneSet[i];
+			visibleNum += Singleton->m_rapidRasterizer->m_instance->queryOccludeeQuadVisibility(occ->data);
 		}
 		gVisibleNum = visibleNum;
 		gTotalQueryNum = totalQueryNum;

@@ -13,6 +13,7 @@
 
 
 #include "../../Util/RapidRasterizer/RapidRasterizer.h"
+#include "../../Util/RapidRasterizer/src/Rasterizer.h"
 #include "../../Util/RapidRasterizer/OccluderQuad.h"
 
 namespace SDOCCommon

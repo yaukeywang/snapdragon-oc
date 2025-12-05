@@ -17,11 +17,8 @@
 #if defined(SDOC_IOS)
 #define PLATFORM_IOS 1
 #endif
-#if defined(SDOC_ANDROID_ARM)
-#define PLATFORM_ANDROID_ARM 1
-#endif
 
-#if PLATFORM_WINDOWS || PLATFORM_ANDROID_ARM || PLATFORM_IOS
+#if PLATFORM_WINDOWS || SDOC_ANDROID_ARM || PLATFORM_ANDROID_ARM || PLATFORM_IOS
 #include <memory>
 #include <vector>
 #include "../../../Common/MathUtil.h"
@@ -370,6 +367,7 @@ public:
 	bool queryVisibility(const float* minmaxf, OccluderRenderCache* OccluderCache);
 	template <bool bQueryOccluder, bool bOccludeeWidth1024, bool multiThreadQuery>
 	bool queryVisibility_OBB(const float* minmaxf);
+	bool queryPointVisibility(OccluderRenderCache& cache, const float* inVtx, unsigned int nVert);
 	void prepareOccludeeRasterization(const float* minmaxf, OccluderRenderCache* occ);
 	template <bool bOccludeeWidth1024, bool multiThreadQuery>
 	bool queryVisibility_QUAD(const float* minmaxf);
@@ -391,7 +389,9 @@ public:
 	template <bool OccludeeWidth1024>
 	void batchQuery(const float * bbox, unsigned int nMesh, bool * results, bool obbMode);
 
-
+	bool queryOccludeeQuadVisibility(const float* inVtx);
+	bool queryOccludeeSinglePointVisibility(const float* inVtx);
+	
 
 	size_t getMemoryUsage() const;
 
@@ -432,6 +432,7 @@ private:
 	template <bool bPixelAABBClippingQuad, bool bDrawOccludee>
 	void drawQuad(__m128 * x, __m128 * y, __m128 * invW, __m128 * W,  __m128 primitiveValid, __m128* edgeNormalsX, __m128* edgeNormalsY, __m128* areas, OccluderRenderCache* occluderCache);
 
+	bool isPointVisible(float xf, float yf, uint16_t pointZ);
 	template <int RASTERIZE_CONFIG>
 	void rasterize(SDOCCommon::OccluderMesh& raw, OccluderRenderCache* occluderCache);
 
@@ -463,6 +464,8 @@ private:
 
     uint32_t m_width = 0;
 	uint32_t m_height = 0;
+	float m_widthf = 0.0f;
+	float m_heightf = 0.0f;
 	uint32_t m_blocksX = 0;
 	uint32_t m_blocksY = 0;
 	int mBlockWidthMin;
@@ -551,6 +554,7 @@ public:
 
 	std::vector<uint64_t> mAnyDataBlockMask;
 
+	__m128i *mQueryValidRegion = nullptr;
 private:
 	template <int PrimitveEdgeNum>
 	void HandleDrawMode(__m128* x, __m128* y, __m128* z, uint32_t alivePrimitive, OccluderRenderCache* occluderCache);
@@ -569,6 +573,7 @@ public:
 	bool mOccludeeTrueAsCulled = false;
 	uint16_t* mOccludeeTreeData = nullptr;
 
+	int queryOccludeeMeshQuadVisibility(OccluderRenderCache* occ, const float* inVtx);
 };
 
 } // namespace util

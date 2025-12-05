@@ -325,9 +325,6 @@ namespace SDOCUtil
 
 	class OccluderQuad {
 	public:
-		static float GetSuperFlatOccldueeRatio() {
-			return 0.1f;
-		}
 
 		//SDOC_Get_BakeData_QuadTriangleNum: provide any array of uint16, first/second would be used to store Quad/Triangle number, 
 		//the coming 4 uint16 would store first 4 elements of baked data

@@ -27,6 +27,8 @@ namespace SDOCCommon
 	static const std::string CAM_POS_HEADER = "Camera PosDir";
 	static const std::string VIEW_PROJ_HEADER = "View Projection Matrix";
 	static const std::string BATCHED_OCE_HEADER = "Batched Occludee";
+	static const std::string BATCHED_OCE_HEADER1 = "Batched Occludee1";
+	static const std::string BATCHED_OCE_HEADER4 = "Batched Occludee4";
 	static const std::string BATCHED_OCE_HEADER_OBB = "Batched OccludeeOBB";
 	static const uint32_t    BBOX_STRIDE = 6;
 
@@ -50,6 +52,10 @@ namespace SDOCCommon
 
 	static constexpr int SuperCompressVertNum = 1 + (255 / 3);
 
+
+	inline float GetSuperFlatOccldueeRatio() {
+		return 0.12f;  //ratio of aabb edges to determine whether occludee is super-flat
+	}
 
 	class FloatArray {
 	public:
@@ -81,10 +87,22 @@ namespace SDOCCommon
     public:
 		void updateTranspose(const float *src)
 		{
+#ifdef __aarch64__
 			Row[0] = _mm_setr_ps(src[0], src[4], src[8], src[12]);
 			Row[1] = _mm_setr_ps(src[1], src[5], src[9], src[13]);
 			Row[2] = _mm_setr_ps(src[2], src[6], src[10], src[14]);
 			Row[3] = _mm_setr_ps(src[3], src[7], src[11], src[15]);
+#else
+			__m128 col0 = _mm_loadu_ps(&src[0]);
+			__m128 col1 = _mm_loadu_ps(&src[4]);
+			__m128 col2 = _mm_loadu_ps(&src[8]);
+			__m128 col3 = _mm_loadu_ps(&src[12]);
+			_MM_TRANSPOSE4_PS(col0, col1, col2, col3);
+			Row[0] = col0;
+			Row[1] = col1;
+			Row[2] = col2;
+			Row[3] = col3;
+#endif
 		}
 		
 		static void Multiply(const Matrix4x4 &a, const Matrix4x4 &b,  Matrix4x4 &c) 

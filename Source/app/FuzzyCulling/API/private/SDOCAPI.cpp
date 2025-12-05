@@ -11,6 +11,7 @@
 #include "../../Common/MathUtil.h"
 #include "../../Util/RapidRasterizer/OccluderQuad.h"
 #include "../../Util/RapidRasterizer/RapidRasterizer.h"
+#include "../../Util/RapidRasterizer/src/Rasterizer.h"
 
 using namespace SOC;
 
@@ -51,10 +52,6 @@ bool sdocStartNewFrame(void *pSDOC, const float *ViewPos, const float *ViewDir, 
 {
 
 	SOCPrivate *instance = (SOCPrivate *)pSDOC;
-	if (instance == nullptr)
-	{
-		return false;
-	}
     instance->startNewFrame(ViewPos, ViewDir, ViewProj);
     return true;
 }
@@ -77,10 +74,6 @@ void sdocRenderOccluder(void*pSDOC, const float *vertices, const unsigned short 
 {
 
 	SOCPrivate *instance = (SOCPrivate *)pSDOC;
-	if (instance == nullptr)
-	{
-		return ;
-	}
 	//direct call rapid rasterizer
 	bool validMesh = instance->m_rapidRasterizer->SubmitRawOccluder(vertices, indices, nVert, nIdx, localToWorld, backfaceCull);
 	if (instance->m_frameInfo->mIsRecording)
@@ -92,7 +85,7 @@ void sdocRenderOccluder(void*pSDOC, const float *vertices, const unsigned short 
 	}
 }
 
-bool sdocQueryOccludeeMesh(void* pSDOC, const float* vertices, const unsigned short* indices, unsigned int nVert, unsigned int nIdx, const float* localToWorld, bool backfaceCull, const float* worldAABB)
+bool sdocQueryOccludeeMesh(void* pSDOC, const float* vertices, const unsigned short* indices, unsigned int nVert, unsigned int nIdx, const float* localToWorld, bool backfaceCull, const float* worldAABB, const float* minExtents)
 {
 
 	SOCPrivate* instance = (SOCPrivate*)pSDOC;
@@ -100,8 +93,22 @@ bool sdocQueryOccludeeMesh(void* pSDOC, const float* vertices, const unsigned sh
 	{
 		return false;
 	}
-	//direct call rapid rasterizer
-	bool visible = instance->m_rapidRasterizer->QueryRawOccludee(vertices, indices, nVert, nIdx, localToWorld, backfaceCull, worldAABB);
+
+	SDOCUtil::OccluderInput  inputOcc;
+	inputOcc.inVtx = vertices;
+	inputOcc.inIdx = indices;
+	inputOcc.nVert = nVert;
+	inputOcc.nIdx = nIdx;
+	inputOcc.modelWorld = localToWorld;
+	inputOcc.backfaceCull = backfaceCull;
+	inputOcc.priority = backfaceCull;
+	inputOcc.IsValidRawMesh = nVert > 0 && nIdx > 0 && (nIdx % 3 == 0);
+	inputOcc.IsRawMesh = inputOcc.IsValidRawMesh;
+	inputOcc.IsOccludee = true;
+
+	bool visible = instance->m_rapidRasterizer->RasterizeOccludeeMesh(&inputOcc, worldAABB, minExtents);
+
+
 	if (instance->m_frameInfo->mIsRecording)
 	{
 		instance->m_frameInfo->RecordOccluder(vertices, indices, nVert, nIdx, localToWorld, backfaceCull, "Query");
@@ -148,13 +155,25 @@ bool sdocQueryOccludees(void * pSDOC, const float *bbox, unsigned int nMesh, boo
 {
 
 	SOCPrivate *instance = (SOCPrivate *)pSDOC;
-	if (instance == nullptr)
-	{
-		return false;
-	}
 
 	///////batchQuery would do input check
 	return instance->batchQuery(bbox, nMesh, results, false);
+}
+bool sdocQueryOccludeeSinglePoint(void* pSDOC, const float* vertices) {
+	SOCPrivate* instance = (SOCPrivate*)pSDOC;
+	if (instance->m_frameInfo->mIsRecording)
+	{
+		instance->m_frameInfo->RecordOccludee(vertices, 1);
+	}
+	return instance->m_rapidRasterizer->m_instance->queryOccludeeSinglePointVisibility(vertices);
+}
+bool sdocQueryOccludeeQuad(void* pSDOC, const float* vertices) {
+	SOCPrivate* instance = (SOCPrivate*)pSDOC;
+	if (instance->m_frameInfo->mIsRecording)
+	{
+		instance->m_frameInfo->RecordOccludee(vertices, 4);
+	}
+	return instance->m_rapidRasterizer->m_instance->queryOccludeeQuadVisibility(vertices);
 }
 static void CheckRecording(SOCPrivate *instance, int occluderNum) 
 {

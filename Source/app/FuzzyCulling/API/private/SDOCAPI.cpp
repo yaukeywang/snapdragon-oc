@@ -99,7 +99,13 @@ bool sdocQueryOccludeeMesh(void* pSDOC, const float* vertices, const unsigned sh
 	inputOcc.inIdx = indices;
 	inputOcc.nVert = nVert;
 	inputOcc.nIdx = nIdx;
-	inputOcc.modelWorld = localToWorld;
+	if (localToWorld != nullptr) {
+		inputOcc.IsOccludeeMeshModelWorldValid = true;
+		memcpy(inputOcc.modelWorld, localToWorld, 16 * sizeof(float));
+	}
+	else {
+		inputOcc.IsOccludeeMeshModelWorldValid = false;
+	}
 	inputOcc.backfaceCull = backfaceCull;
 	inputOcc.priority = backfaceCull;
 	inputOcc.IsValidRawMesh = nVert > 0 && nIdx > 0 && (nIdx % 3 == 0);

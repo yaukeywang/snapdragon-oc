@@ -30,10 +30,11 @@ public:
 	bool IsRawMesh = false;
 	bool IsValidRawMesh = false;
 	bool IsOccludee = false;
+	bool IsOccludeeMeshModelWorldValid = true;
 	uint16_t priority = 0;
 	unsigned int nVert = 0;
 	unsigned int nIdx = 0;
-	const float *modelWorld = nullptr;
+	float modelWorld[16]; //Backup model world to avoid pointer approach as in UE, the pointer might be in any of double-buffer
 	const float * inVtx = nullptr;
 	const unsigned short * inIdx = nullptr;
 };

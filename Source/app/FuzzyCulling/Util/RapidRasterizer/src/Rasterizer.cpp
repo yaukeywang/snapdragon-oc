@@ -117,7 +117,7 @@ namespace SDOCUtil
 	static constexpr int nOcludeeOBBSize = 18;   //Debug: change to 12 if input only 4 points, otherwise 18
 
 	static constexpr bool bOccludeeBitScanOp = 1;
-	static constexpr uint16_t bOccludeeMinDepthThreshold = 150 << 8; //depth 9360
+	static constexpr uint16_t gOccludeeMinDepthThreshold = 150 << 8; //depth 9360
 
 
 #if defined( SUPPORT_ALL_FEATURE)
@@ -131,9 +131,11 @@ namespace SDOCUtil
 	static constexpr bool bTestQUADByAABB = false; //enable this to print
 
 	static constexpr int DEBUG_DATA_SIZE = 256; //used to store all the counters
+	
+	//enable below two config to profile occludee query
 	static constexpr bool PrintOccludeeState = false;
+	static constexpr bool DebugOccluderOccludee = false;
 
-	static constexpr bool DebugOccluderOccludee = 0;
 	static constexpr bool bDebugOccluderOnly = 0;
 	static constexpr int bDebugOccluderPixelX = -1;
 	static constexpr int bDebugOccluderPixelY = -1;
@@ -291,17 +293,6 @@ Rasterizer::Rasterizer()
 			}
 		}
 	}
-	if(bDebug_QueryHizCheck128)
-	{
-		mQueryValidRegion = new __m128i[7];
-		mQueryValidRegion[0] = _mm_setr_epi16(-1,  0,  0,  0,  0,  0, 0, 0);
-		mQueryValidRegion[1] = _mm_setr_epi16(-1, -1,  0,  0,  0,  0, 0, 0);
-		mQueryValidRegion[2] = _mm_setr_epi16(-1, -1, -1,  0,  0,  0, 0, 0);
-		mQueryValidRegion[3] = _mm_setr_epi16(-1, -1, -1, -1,  0,  0, 0, 0);
-		mQueryValidRegion[4] = _mm_setr_epi16(-1, -1, -1, -1, -1,  0, 0, 0);
-		mQueryValidRegion[5] = _mm_setr_epi16(-1, -1, -1, -1, -1, -1, 0, 0);
-		mQueryValidRegion[6] = _mm_setr_epi16(-1, -1, -1, -1, -1, -1,-1, 0);
-	}
 }
 
 #if defined( SUPPORT_ALL_FEATURE)
@@ -319,10 +310,6 @@ static __m128i packDepthPremultiplied(__m128 depthAf, __m128 depthBf, __m128i ma
 }
 #endif
 
-inline static bool _mm_anybit_one_soc(__m128i depthA) {
-	uint64_t* data = (uint64_t*)&depthA;
-	return (data[0] | data[1]) != 0;
-}
 inline static __m128i packQueryDepth(__m128 depthA)
 {
 	__m128i depthAi = _mm_srli_epi32(_mm_castps_si128(depthA), 12);
@@ -353,12 +340,6 @@ Rasterizer::~Rasterizer()
 	mOccluderCache = nullptr;
 	delete mPixelBound;
 	mPixelBound = nullptr;	
-
-	if (mQueryValidRegion != nullptr) 
-	{
-		delete[]mQueryValidRegion;
-	}
-
 }
 void Rasterizer::setResolution(unsigned int width, unsigned int height)
 {
@@ -779,18 +760,35 @@ void Rasterizer::onOccluderRenderFinish()
 		uint16_t* hizBufferStart = m_pHiz + StartBlock;
 		int EndBlockIdx = EndBlock >> 1;
 		int StartBlockIdx = StartBlock >> 1;  //the start update idx of uint64_t
+
+
+		int totalBlocks8 = (int)(this->m_blockSize >> 3);
+		__m128i* pHiz = (__m128i*)m_pHiz;
+		__m128i minHiz = _mm_set1_epi32(-1);
+		for (int idx = 0; idx < totalBlocks8; idx++)
+		{
+			__m128i input = pHiz[idx];
+			__m128i small = _mm_cmple_epu16_soc(input, _mm_set1_epi16(gOccludeeMinDepthThreshold));
+			minHiz = _mm_min_epu16(_mm_or_si128(input, small), minHiz);
+		}
+		uint16_t minHiz16 = _mm_min_epu16(minHiz);
+		uint16_t th = std::max<uint16_t>(minHiz16, gOccludeeMinDepthThreshold);
+		mOccludeeMinDepthThreshold = th;
 		do
 		{
 			uint64_t rowMaskData0 = 0; //only care 0~63
 			{
 				__m128i * CurrentHIZ = (__m128i *)hizBufferStart;
 				int x = StartBlockIdx;
-				uint16_t th = bOccludeeMinDepthThreshold;
 				do {
 					__m128i pass = _mm_cmple_epu16_soc(_mm_set1_epi16(th), CurrentHIZ[0]);
 					__m128i pass2 = _mm_srai_epi32(pass, 16);
 					pass = _mm_and_si128(pass, pass2);
-					uint32_t * result = (uint32_t *)& pass;
+
+
+					alignas(16) uint32_t result[8];
+					_mm_store_si128((__m128i*)result, pass);
+
 
 					uint32_t maskValue = (result[0] & 1) | (result[1] & 2) | (result[2] & 4) | (result[3] & 8);
 
@@ -824,7 +822,7 @@ void Rasterizer::onOccluderRenderFinish()
 				{
 					uint16_t* CurrentHIZ = (uint16_t*)hizBuffer;
 					int x = 0;
-					uint16_t th = bOccludeeMinDepthThreshold;
+					uint16_t th = gOccludeeMinDepthThreshold;
 					do {
 						int k = x >> 1;
 						rowMaskData0 |= ((uint64_t)(CurrentHIZ[0] >= th && CurrentHIZ[1] >= th)) << k; k++;
@@ -1106,7 +1104,6 @@ void Rasterizer::batchQuery(const float * bbox, unsigned int nMesh, bool * resul
 {
 	if (bDebugOccluderOnly) 
 	{
-		memset(DebugData, 0, DEBUG_DATA_SIZE * sizeof(uint32_t));
 		return;
 	}
 
@@ -1122,245 +1119,7 @@ void Rasterizer::batchQuery(const float * bbox, unsigned int nMesh, bool * resul
 	mOccludeeTrueAsCulled = false;
 
 
-	if (DebugOccluderOccludee)
-	{
-		if (PrintOccludeeState)
-		{
-			bool specialDebug = 0;
-			if (specialDebug)
-			{
-
-
-				LOGI(" QuadProcessed:           %d", DebugData[QuadProcessed]);
-				LOGI(" QuadToTriangleMerge:           %d", DebugData[QuadToTriangleMerge]);
-				LOGI(" QuadToTriangleSplit:           %d", DebugData[QuadToTriangleSplit]);
-
-
-
-				LOGI("Query BlockAABBClipToZero:           %d", DebugData[BlockAABBClipToZero]);
-				LOGI("Query BlockRenderPartial:           %d", DebugData[BlockRenderPartial]);
-				LOGI("Query BlockRenderFull:           %d", DebugData[BlockRenderFull]);
-				LOGI("Query BlockMaxLessThanMinCull:           %d", DebugData[BlockMaxLessThanMinCull]);
-				LOGI("Query BlockMaskJointZeroCull:           %d", DebugData[BlockMaskJointZeroCull]);
-				LOGI("Query BlockTotalPrimitives:           %d", DebugData[BlockTotalPrimitives]);
-				
-
-				//LOGI("****Render P4EarlyHizCull                         %d", DebugData[P4EarlyHizCull]);
-				//LOGI("****Render P4EarlyHizCullPass                         %d", DebugData[P4EarlyHizCullPass]);
-				//	
-				//LOGI("****Render OccluderRasterized                         %d", DebugData[OccluderRasterized]);
-				//LOGI("****Render RasterizedOccluderTotalTriangles                         %d", DebugData[RasterizedOccluderTotalTriangles]);
-				//LOGI("****Render RasterizedOccluderTotalVertices                         %d", DebugData[RasterizedOccluderTotalVertices]);
-
-
-				
-				//LOGI("****Render BlockConvexRow00Cull                         %d", DebugData[BlockConvexRow00Cull]);
-				//LOGI("****Render BlockConvexRow10Cull                         %d", DebugData[BlockConvexRow10Cull]);
-				//LOGI("****Render BlockConvexEdge24Cull                         %d", DebugData[BlockConvexEdge24Cull]);
-				//LOGI("****Render BlockConvexEdge31Cull                         %d", DebugData[BlockConvexEdge31Cull]);
-				////LOGI("****Render BlockConvexEdge31CullRowCheck                         %d", DebugData[BlockConvexEdge31CullRowCheck]);
-				//LOGI("****Render BlockConvexEdge31CullRowCheckPass                         %d", DebugData[BlockConvexEdge31CullRowCheckPass]);
-				//LOGI("****Render BlockConvexAllZeroRow                         %d", DebugData[BlockConvexAllZeroRow]);
-				////LOGI("****Render BlockTotal                         %d", DebugData[BlockTotal]);
-				//LOGI("****Render BlockConvexRow00CullNextScanRows                         %d", DebugData[BlockConvexRow00CullNextScanRows]);
-				//LOGI("****Render BlockConvexEdge24Check                         %d", DebugData[BlockConvexEdge24Check]);
-			
-				
-			}
-			else {
-				int allOccludeeQuery = 
-					DebugData[OccludeeFrustumCull] +
-					DebugData[OccludeeNearClipPass] +
-					DebugData[OccludeeQuery2d];
-
-
-				LOGI("*************************************");
-				
-				
-				LOGI("Render P4QuadSplit       %d", DebugData[P4QuadSplit]);
-				LOGI("Render P4QuadFrustumCull       %d", DebugData[P4QuadFrustumCull]);
-				LOGI("Render P4QuadFrustumPass       %d", DebugData[P4QuadFrustumPass]);
-				
-				LOGI("Query QueryBlockDoWhileIfSave       %d", DebugData[QueryBlockDoWhileIfSave]);
-				LOGI("Query OccludeeFrustumCull       %d", DebugData[OccludeeFrustumCull]);
-				LOGI("Query FastHalfPlaneCull         %d", DebugData[FastHalfPlaneCull]);
-				LOGI("Query FastBlockHizCull          %d", DebugData[FastBlockHizCull]);
-				LOGI("Query BlockPixelCull            %d", DebugData[BlockPixelCull]);
-				LOGI("Query OccludeeCull              %d", DebugData[OccludeeCull]);
-
-				LOGI("Query OccludeeQueryMaxPass              %d", DebugData[OccludeeQueryMaxPass]);
-				LOGI("Query OccluderQueryMaxPass              %d", DebugData[OccluderQueryMaxPass]);
-				
-				LOGI("Query OccludeeNearClipPass      %d", DebugData[OccludeeNearClipPass]);
-				LOGI("Query FastRowBitCull:           %d", DebugData[FastRowBitCull]);
-				LOGI("Query FastBlockEmptyPass        %d", DebugData[FastBlockEmptyPass]);
-				LOGI("Query BlockMaskPass             %d", DebugData[BlockMaskPass]);
-				LOGI("Query OccludeeQueryMaxPass             %d", DebugData[OccludeeQueryMaxPass]);
-				LOGI("Query BlockEmptyPass            %d", DebugData[BlockEmptyPass]);
-				LOGI("Query BlockPixelPass            %d", DebugData[BlockPixelPass]);
-				LOGI("Query InterleaveQuerySkipPass   %d", DebugData[InterleaveQuerySkipPass]);
-				LOGI("Query OccludeeOnePixelExpandCheck -->   %d", DebugData[OccludeeOnePixelExpandCheck]);
-				LOGI("Query OccludeeQuery2d:          %d/%d ", DebugData[OccludeeQuery2d], allOccludeeQuery);
-				int totalPass = 0;
-				totalPass += DebugData[OccludeeNearClipPass];
-				totalPass += DebugData[FastRowBitCull];
-				totalPass += DebugData[FastBlockEmptyPass];
-				totalPass += DebugData[BlockMaskPass];
-				totalPass += DebugData[BlockEmptyPass];
-				totalPass += DebugData[BlockPixelPass]; 
-				totalPass += DebugData[InterleaveQuerySkipPass]; 
-				totalPass += DebugData[OccludeeQueryMaxPass];
-				LOGI("Query OccludeeTotalPass:       %d/%d ", totalPass, allOccludeeQuery);
-				LOGI("Query BlockRowCheck   %d", DebugData[BlockRowCheck]);
-
-				LOGI("Query MaxOccludeeZ   %d", DebugData[MaxOccludeeZ]);
-				LOGI("Query FastBlockDepthCompare   %d", DebugData[FastBlockDepthCompare]);
-
-				LOGI("Query FastPlaneBlockDepthCompareSave   %d", DebugData[FastPlaneBlockDepthCompareSave]); 
-
-
-				LOGI("Render OccluderCulled          %d", DebugData[OccluderCulled]);
-				LOGI("Render OccluderRasterized      %d", DebugData[OccluderRasterized]);
-				LOGI("Render P4CameraNearPlaneCull   %d", DebugData[P4CameraNearPlaneCull]);
-				LOGI("Render P4BackFaceCull          %d", DebugData[P4BackFaceCull]);
-				LOGI("Render P4FrustumCull           %d", DebugData[P4FrustumCull]);
-				LOGI("Render P4EarlyHizCull          %d", DebugData[P4EarlyHizCull]);
-				
-				LOGI("Render PrimitiveCameraNearPlaneCull   %d", DebugData[PrimitiveCameraNearPlaneCull]);
-				LOGI("Render PrimitiveFrustumCull           %d", DebugData[PrimitiveFrustumCull]);
-
-				LOGI("Render PrimitiveBackFaceCull          %d", DebugData[PrimitiveBackFaceCull]);
-
-				int p4Total = std::max<int>(1, DebugData[P4DrawTriangle]);
-				LOGI("Render P4Rasterized              %d   Ratio to Total DrawTriangle %d%%", DebugData[P4Rasterized], 100 * DebugData[P4Rasterized] / p4Total);
-				LOGI("Render P4Total                   %d", DebugData[P4Total]);
-				LOGI("Render P4PassFrustumCull                   %d", DebugData[P4PassFrustumCull]);
-				
-
-
-				LOGI("Render P4DrawTriangle            %d", DebugData[P4DrawTriangle]);
-				LOGI("Render P4PassCull            %d", DebugData[P4PassCull]);
-				
-				LOGI("Render P4Degenerate(valid0)      %d", DebugData[P4Valid0]);
-				if (DebugData[P4Rasterized] > 0) {
-					LOGI("Render P4Valid1                  %d    Ratio %d%% ", DebugData[P4Valid1], DebugData[P4Valid1] * 100 / DebugData[P4Rasterized]);
-					LOGI("Render P4Valid2                  %d    Ratio %d%% ", DebugData[P4Valid2], DebugData[P4Valid2] * 100 / DebugData[P4Rasterized]);
-					LOGI("Render P4Valid3                  %d    Ratio %d%% ", DebugData[P4Valid3], DebugData[P4Valid3] * 100 / DebugData[P4Rasterized]);
-					LOGI("Render P4Valid4                  %d    Ratio %d%% ", DebugData[P4Valid4], DebugData[P4Valid4] * 100 / DebugData[P4Rasterized]);
-				}
-				
-
-				LOGI("Render P4NearClipInput                   %d", DebugData[P4NearClipInput]);
-				LOGI("Render PrimitiveNearClipeRasterized      %d", DebugData[PrimitiveNearClipeRasterized]);
-
-
-				LOGI("Render PrimitiveEarlyHiZCull              %d", DebugData[PrimitiveEarlyHiZCull]);
-				LOGI("Render PrimitiveDegenerateCull             %d", DebugData[PrimitiveDegenerateCull]);
-				LOGI("Render PrimitiveTotalInput                %d", DebugData[PrimitiveTotalInput]);
-				int primitiveTotalInput = std::max<int>(1, DebugData[PrimitiveTotalInput]);
-				LOGI("Render PrimitiveRasterizedNum             %d  Ratio %d%%", DebugData[PrimitiveRasterizedNum], 100 * DebugData[PrimitiveRasterizedNum] / primitiveTotalInput);
-				
-				LOGI("Render Primitive total culled             %d", 
-					DebugData[PrimitiveEarlyHiZCull]
-					+ DebugData[PrimitiveCameraNearPlaneCull]
-					+ DebugData[PrimitiveFrustumCull]
-					+ DebugData[PrimitiveBackFaceCull]
-					+ DebugData[PrimitiveDegenerateCull]);
-
-				
-				
-				LOGI("Render BlockDoWhileIfSave                         %d", DebugData[BlockDoWhileIfSave]);
-				LOGI("Render BlockTotal                         %d", DebugData[BlockTotal]);
-				int blockTotal = std::max<int>(1, DebugData[BlockTotal]);
-				LOGI("Render BlockConvexRow10CullOverhead            %d   Overhead Ratio to Total %d%%", DebugData[BlockConvexRow10CullOverhead], DebugData[BlockConvexRow10CullOverhead] * 100 / blockTotal);
-
-
-				LOGI("****Render BlockConvexRow00Cull                         %d", DebugData[BlockConvexRow00Cull]);
-				LOGI("****Render BlockConvexRow10Cull                         %d", DebugData[BlockConvexRow10Cull]);
-				LOGI("****Render BlockConvexEdge24Cull                         %d", DebugData[BlockConvexEdge24Cull]);
-				LOGI("****Render BlockConvexEdge31Cull                         %d", DebugData[BlockConvexEdge31Cull]);
-
-				
-				LOGI("Render  All Convex cull ratio:           ---->     %d%%", 
-					(DebugData[BlockConvexRow00Cull]
-						+ DebugData[BlockConvexRow10Cull]
-					+ DebugData[BlockConvexEdge24Cull]
-					+ DebugData[BlockConvexEdge31Cull])
-					* 100 / blockTotal);
-
-
-				LOGI("Render BlockRenderTotal %d%% + BlockMaxLessThanMinCull %d%% + BlockMaskJointZeroCull %d%% + BlockPrimitiveMaxLessThanMinCull %d%%  + BlockOneSureZeroCull %d%%  + BlockConvexRow10Cull %d%%  =  %d",
-					100 * DebugData[BlockRenderTotal] / blockTotal,
-					100 * DebugData[BlockMaxLessThanMinCull] / blockTotal,
-					100 * DebugData[BlockMaskJointZeroCull] / blockTotal,
-					100 * DebugData[BlockPrimitiveMaxLessThanMinCull] / blockTotal,
-					100 * DebugData[BlockOneSureZeroCull] / blockTotal,
-					100 * DebugData[BlockConvexRow10Cull] / blockTotal,
-					DebugData[BlockRenderTotal] +
-					DebugData[BlockMaxLessThanMinCull] +
-					DebugData[BlockMaskJointZeroCull] +
-					DebugData[BlockPrimitiveMaxLessThanMinCull] +
-					DebugData[BlockOneSureZeroCull] +
-					DebugData[BlockConvexRow10Cull] 
-				);
-
-				LOGI("Render BlockPrimitiveMaxLessThanMinCull   %d", DebugData[BlockPrimitiveMaxLessThanMinCull]);
-				LOGI("Render BlockMaskJointZeroCull             %d", DebugData[BlockMaskJointZeroCull]);
-				LOGI("Render BlockMaxLessThanMinCull            %d", DebugData[BlockMaxLessThanMinCull]);
-
-				LOGI("Render BlockRenderTotal                   %d", DebugData[BlockRenderTotal]);
-				LOGI("Render BlockRenderPartial                 %d", DebugData[BlockRenderPartial]);
-				LOGI("Render BlockAABBClipToZero                %d", DebugData[BlockAABBClipToZero]);
-				LOGI("Render BlockRenderFull                    %d", DebugData[BlockRenderFull]);
-				LOGI("Render BlockRenderInitial                 %d", DebugData[BlockRenderInitial]);
-
-
-				LOGI("Render BlockRenderInitialPartial          %d", DebugData[BlockRenderInitialPartial]);
-				LOGI("Render BlockRenderInitialFull             %d", DebugData[BlockRenderInitialFull]);
-
-
-
-				LOGI("Render BlockMinCompute4                   %d", DebugData[BlockMinCompute4]);
-				LOGI("Render BlockMinUseOne                     %d", DebugData[BlockMinUseOne]);
-
-
-
-
-
-
-				DebugData[BlockMinValidDepth] = 65535;
-
-				for (uint32_t blockY = 0; blockY < m_blocksY; ++blockY)
-				{
-					int base = blockY * m_blocksX;
-					for (uint32_t blockX = 0; blockX < m_blocksX; ++blockX)
-					{
-						int hizIdx = blockX + base;
-						uint16_t hiz = m_pHiz[hizIdx];
-						if (hiz > MIN_UPDATED_BLOCK_DEPTH2)
-						{
-							DebugData[BlockMinValidDepth] = std::min<uint16_t>(DebugData[BlockMinValidDepth], hiz);
-						}
-
-						if (hiz == 0)
-						{
-							DebugData[BlockEmptyBlock] ++;
-							continue;
-						}
-					}
-				}
-				LOGI("Render BlockMinValidDepth %d", DebugData[BlockMinValidDepth]);
-				LOGI("Render BlockEmptyBlock %d Ratio %d%%", DebugData[BlockEmptyBlock], 100 * DebugData[BlockEmptyBlock] / m_blockSize);
-
-
-
-			}
-
-		}
-
-		memset(DebugData, 0, DEBUG_DATA_SIZE * sizeof(uint32_t));
-
-	}
+	
 }
 
 
@@ -1961,10 +1720,18 @@ bool Rasterizer::queryVisibility(const float* minmaxf, OccluderRenderCache* occ)
 	__m128 extents;
 	if (bQueryOccluder)
 	{
+		if (DebugOccluderOccludee)
+		{
+			this->DebugData[OccluderQueryTotal]++;
+		}
 		extents = _mm_setr_ps(minmaxf[3], minmaxf[4] , minmaxf[5] , 0);
 	}
 	else 
 	{
+		if (DebugOccluderOccludee)
+		{
+			this->DebugData[OccludeeQueryTotal]++;
+		}
 		if (bTestQUADByAABB) {
 			bool testobb = false;
 			float obb[18];
@@ -2134,7 +1901,6 @@ bool Rasterizer::queryVisibility(const float* minmaxf, OccluderRenderCache* occ)
 					if (bQueryOccluder == false)
 					{
 						this->DebugData[OccludeeFrustumCull]++;
-						this->DebugData[OccludeeCull]++;
 					}
 					else {
 						this->DebugData[OccluderCulled]++;
@@ -2225,6 +1991,7 @@ bool Rasterizer::queryVisibility(const float* minmaxf, OccluderRenderCache* occ)
 				if (DebugOccluderOccludee)
 				{
 					this->DebugData[OccluderCulled] += bQueryOccluder;
+					this->DebugData[OccludeeFrustumCull]+= !bQueryOccluder ;
 				}
 				return false;
 			}
@@ -2296,6 +2063,12 @@ bool Rasterizer::queryVisibility(const float* minmaxf, OccluderRenderCache* occ)
 					auto min_max_sum = _mm_add_ps(boundsMax, boundsMin);
 					assert(inFrustum(min_max_sum, extents, FrustumPlane) == false);
 				}
+
+
+				if (DebugOccluderOccludee && !bQueryOccluder)
+				{
+					this->DebugData[OccludeeFrustumCull]++;
+				}
 				return false;
 			}
 		}
@@ -2323,7 +2096,6 @@ bool Rasterizer::queryVisibility(const float* minmaxf, OccluderRenderCache* occ)
 					if (bQueryOccluder == false)
 					{
 						this->DebugData[OccludeeFrustumCull]++;
-						this->DebugData[OccludeeCull]++;
 					}
 					else {
 						this->DebugData[OccluderCulled]++; 
@@ -2338,11 +2110,9 @@ bool Rasterizer::queryVisibility(const float* minmaxf, OccluderRenderCache* occ)
 			occ->prepareCache(egde0, egde1, egde2);
 		}
 
-		if (DebugOccluderOccludee)
+		if (DebugOccluderOccludee && !bQueryOccluder)
 		{
-			if (bQueryOccluder) {
-				this->DebugData[OccludeeNearClipPass]++;
-			}
+			this->DebugData[OccludeeNearClipPass]+= visible;
 		}
 	}
 
@@ -2447,32 +2217,35 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 
 	if (bQueryOccluder == false && bOccludeeBitScanOp) 
 	{
-        //return true;
-		if (maxZ < bOccludeeMinDepthThreshold && bOccludeeWidth1024) {
+		if (maxZ < mOccludeeMinDepthThreshold && bOccludeeWidth1024) {
 			//1. occludee any block scan				
 			uint64_t all = -1;
 			int DualBlockMinX = blockMinX >> 1;
 			int DualBlockMaxX = blockMaxX >> 1;
             uint64_t rowMask = (all << DualBlockMinX) & (all >> (63 ^ DualBlockMaxX));
-          
 
-			int y = blockMaxY;
-            uint64_t mask = -1;
+			int y = blockMinY;
 			do {
-                mask &= mAnyDataBlockMask[y];
-				y--;
-			} while (y >= blockMinY);
+				uint64_t mask= mAnyDataBlockMask[y];
+				if (rowMask != (rowMask & mask)) {
+					break;
+				}
+				y++;
+			} while (y <= blockMaxY);
 
-            
-            if (rowMask == (rowMask & mask))
-            {
-                if (DebugOccluderOccludee && !bQueryOccluder)
-                {
-                    DebugData[FastRowBitCull]++;
-                }
+			if (y > blockMaxY) {
+				if (DebugOccluderOccludee && !bQueryOccluder)
+				{
+					DebugData[OccludeeFastRowBitCull]++;
+				}
 
-                return false;
-            }
+				return false;
+			}
+			else if (y != blockMinY) {
+				//std::cout << "**************blockMinY " << blockMinY << " y " << y << " maxY " <<blockMaxY << " minX " << blockMinX <<" maxX " <<blockMaxX << std::endl;
+				blockMinY = y;
+				pixelMinY = y * 8;
+			}
 
 		}
 	}
@@ -2480,14 +2253,23 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 	//usage of hiz Max to accelerate pass check
 	
 	int topRow = blockMaxY * m_blocksX;
-	if (m_pHizMax[topRow + blockMinX] <= maxZ || m_pHizMax[topRow + blockMaxX] <= maxZ) //top left
+	uint16_t* pHizRowTopRow = m_pHizMax + topRow;	
+	if (pHizRowTopRow[blockMinX] <= maxZ || 
+		pHizRowTopRow[blockMaxX] <= maxZ ||
+		pHizRowTopRow[((blockMaxX + blockMinX) >> 1)] <= maxZ) //top left, top right, top mid
 	{
 		if (DebugOccluderOccludee)
 		{
-			DebugData[OccludeeQueryMaxPass] += !bQueryOccluder;
-			DebugData[OccluderQueryMaxPass] += bQueryOccluder;
+			if (bQueryOccluder == false)
+				DebugData[OccludeeQueryMaxPass]++;
+			else
+				DebugData[OccluderQueryMaxPass]++;
 		}
 		return true;
+	}
+	if (DebugOccluderOccludee && !bQueryOccluder)
+	{
+		DebugData[OccludeeQuerySlowPath1]++;
 	}
 
 
@@ -2517,17 +2299,13 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 				int blockX = blockMinX;
 				do
 				{
-					if (DebugOccluderOccludee && !bQueryOccluder)
-					{
-						DebugData[FastBlockDepthCompare]++;
-					}
 					if (maxZ >= pHiZ[0])
 					{
 						if (pHiZ[0] == 0)
 						{
 							if (DebugOccluderOccludee && !bQueryOccluder)
 							{
-								DebugData[FastBlockEmptyPass]++;
+								DebugData[OccludeeFastBlockEmptyPass]++;
 							}
 
 							return true;
@@ -2542,24 +2320,22 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 			}
 			else {
 				int delta = blockMaxX - blockMinX;
-				__m128i validRegion = _mm_set1_epi32(-1);
-				__m128i maxZ128 = _mm_set1_epi16(maxZ);
 				do
 				{
-					if (delta < 7) {
-						validRegion = mQueryValidRegion[delta];
-					}
 					__m128i phiz128 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pHiZ));
-					if (bQueryOccluder) {
-						__m128i zero128 = _mm_and_si128(validRegion, _mm_cmpeq_epi16(phiz128, _mm_set1_epi16(0)));
-						uint64_t* zeroMask = (uint64_t*)&zero128;
-						if ((zeroMask[0] | zeroMask[1]) != 0) {
+					__m128i inactiveRegion = _mm_cmpgt_epi16(_mm_setr_epi16(0, 1, 2, 3, 4, 5, 6, 7), _mm_set1_epi16(delta));
+					phiz128 = _mm_or_si128(inactiveRegion, phiz128); //max inactive region in case delta < 7
+
+					uint16_t minHiZ = _mm_min_epu16(phiz128);
+					if (minHiZ <= maxZ) {
+						if (minHiZ == 0) {
+							if (DebugOccluderOccludee && !bQueryOccluder)
+							{
+								DebugData[OccludeeFastBlockEmptyPass]++;
+							}
 							return true;
 						}
-					}
-					__m128i large128 = _mm_and_si128(validRegion, _mm_cmplt_epu16_soc(phiz128, maxZ128));
-					uint64_t* largeMask = (uint64_t*)&large128;
-					if ((largeMask[0] | largeMask[1]) != 0) {
+
 						startBlockY = blockY;
 						blockY = -1;
 						break;
@@ -2576,8 +2352,7 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 		{
 			if (DebugOccluderOccludee && !bQueryOccluder)
 			{
-				DebugData[FastBlockHizCull]++;
-				DebugData[OccludeeCull]++;
+				DebugData[OccludeeFastBlockHizCull]++;
 			}
 			return false;
 		}
@@ -2589,17 +2364,11 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 		}
 		pHizOffset += m_blocksX;
 	}
-    
-    if (m_pHizMax[topRow + ((blockMaxX+blockMinX)>>1)] <= maxZ) //top left
-    {
-        if (DebugOccluderOccludee)
-        {
-            DebugData[OccludeeQueryMaxPass] += !bQueryOccluder;
-            DebugData[OccluderQueryMaxPass] += bQueryOccluder;
-        }
-        return true;
-    }
 
+	if (DebugOccluderOccludee && !bQueryOccluder)
+	{
+		DebugData[OccludeeQuerySlowPath2]++;
+	}
 	//Extend the width in case that only one pixel occludee
 	//this should not affect performance much, as
 	//1. branchless code
@@ -2641,6 +2410,9 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 		DebugData[QueryBlockDoWhileIfSave]++;
 	}
 	int blockY = blockMaxY;
+
+	const __m128i maxZV = _mm_set1_epi16(maxZ);
+
 	do
 	{
 		uint16_t *pHiZ = pHiZBuffer + (pHizOffset);   //optimize pHizOffset = (blockY * m_blocksX + blockMinX);
@@ -2651,6 +2423,15 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 		//uint16_t startY = (pixelMinY & 7) >> ((int)(blockY != blockMinY) << 2); //branchless version
 		uint16_t startY = pixelMinY & mask70((int)(blockY != blockMinY));
 		uint16_t endY = (pixelMaxY | mask70((int)blockY == blockMaxY)) ;
+
+		// Pre-combine Y mask outside blockX loop (2 lookups done once per blockY row)
+		uint64_t yMask = mPixelBound->PixelMinYMask[startY] & mPixelBound->PixelMaxYMask[endY];
+		uint8_t* checkerBoardMask = (uint8_t*)(mCheckerBoardQueryMask + (mCheckerBoardQueryOffset[startY] + endY - startY));
+
+		// Pre-compute checkerboard row range outside blockX loop (same for all blockX in this row)
+		uint16_t realStartY = startY >> 1;
+		uint16_t realEndY = endY >> 1;  //already pack the query two rows into one
+
 
 		//bool interiorLine = (startY == 0) && (endY == 7);
 
@@ -2664,13 +2445,17 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 				continue;
 			}
 
-			if (hiz == 0) {
-				if (DebugOccluderOccludee && !bQueryOccluder)
-				{
-					DebugData[BlockEmptyPass] += hiz == 0;
-				}
-				return true;
-			}
+			////************************************************************************
+			////if hiz == 0, the query will stop in the next "return true"
+			////************************************************************************
+			//if (hiz == 0 && (bOccludeeWidth1024== false && bQueryOccluder == false)) {
+			//	if (DebugOccluderOccludee && !bQueryOccluder)
+			//	{
+			//		DebugData[OccludeeFastBlockEmptyPass] += hiz == 0;
+			//	}
+			//	return true;
+			//}
+			////************************************************************************
 
 
 
@@ -2683,37 +2468,20 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 			//if (blockX == blockMaxX) endX = pixelMaxX & 7;
 			uint16_t endX = (pixelMaxX | mask70((int)blockX == blockMaxX)) ;
 			
-			//due to usage of conserve minz calculation. this check is not valid anymore
-			////{		
-			////	if (DebugOccluderOccludee && !bQueryOccluder)
-			////	{
-			////		DebugData[BlockCorrectMinPass]++;
-			////	}
-			////	if (interiorLine)
-			////	{
-			////		bool interiorBlock = (startX == 0) && (endX == 7);
-			////		// No pixels are masked, so there exists one where maxZ > pixelZ, and the query region is visible
-			////		if (interiorBlock)
-			////		{			
-			////			return true;
-			////		}
-			////	}
-			////}
 			
 			if (PairBlockNum <= PureCheckerBoardApproach+1)
 			{
 				if (hiz <= MIN_UPDATED_BLOCK_DEPTH2 && PairBlockNum != PureCheckerBoardApproach) //partial updated block
 				{
-					uint64_t check = mPixelBound->PixelMinXMask[startX] & 
-						mPixelBound->PixelMaxXMask[endX] &
-						mPixelBound->PixelMinYMask[startY] &
-						mPixelBound->PixelMaxYMask[endY];
+					//CombinedXMask optimization contributed by vaderwang
+					uint64_t check = mPixelBound->CombinedXMask[startX][endX] & yMask;
+
 					uint64_t * maskData = GetMaskData(pBlockDepth, blockX & 1);
 					if (containPattern10(check, maskData[0]))
 					{
 						if (DebugOccluderOccludee && !bQueryOccluder)
 						{
-							DebugData[BlockMaskPass]++;
+							DebugData[OccludeeBlockMaskPass]++;
 						}
 
 						return true;
@@ -2727,16 +2495,17 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 				else
 					startBlockDepth = (__m128i *)pBlockDepth;
 
-				int rowSelector = (0xFF << startX) & (0xFF >> (7 ^ endX));
-				__m128i maxZV = _mm_set1_epi16(maxZ);
+		//startX endX in range of [0, 7]
+		uint8_t rowSelector = (uint8_t)((0xFF << startX) & (0xFF >> (7 ^ endX)));
+		uint8_t rowSelectorCB[4] = {
+			(rowSelector & checkerBoardMask[0]),
+			(rowSelector & checkerBoardMask[1]),
+			(rowSelector & checkerBoardMask[2]),
+			(rowSelector & checkerBoardMask[3])
+		};
 
-				{
-					uint8_t* checkerBoardMask = (uint8_t*)(mCheckerBoardQueryMask + (mCheckerBoardQueryOffset[startY] + endY - startY));
+			{
 					//*******************************************************************
-
-
-					uint16_t realStartY = startY >> 1;
-					uint16_t realEndY = endY >> 1;
 
 					
 					if (DebugOccluderOccludee) {
@@ -2751,13 +2520,12 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 						__m128i visible = _mm_cmple_epu16_soc(dy, maxZV);
 						int visiblePixelMask = _mm_movemask_epi16_soc(visible);
 
-						int currentRowSelector = rowSelector;
-						if (currentRowSelector & visiblePixelMask & checkerBoardMask[y])
+						if (rowSelectorCB[y] & visiblePixelMask)
 						{
 							//LOGI("query2D : %d, %d, %d", currentRowSelector, visiblePixelMask, checkerBoardMask[y]);
 							if (DebugOccluderOccludee && !bQueryOccluder)
 							{
-								DebugData[BlockPixelPass]++;
+								DebugData[OccludeeBlockPixelPass]++;
 							}
 							return true;
 						}
@@ -2783,7 +2551,7 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 					{
 						if (DebugOccluderOccludee && !bQueryOccluder)
 						{
-							DebugData[BlockPixelPass]++;
+							DebugData[OccludeeBlockPixelPass]++;
 						}
 						return true;
 					}
@@ -2797,8 +2565,7 @@ bool Rasterizer::query2D(uint32_t pixelMinX, uint32_t pixelMaxX, uint32_t pixelM
 
 	if (DebugOccluderOccludee && !bQueryOccluder) 
 	{
-		DebugData[BlockPixelCull]++;
-		DebugData[OccludeeCull]++;
+		DebugData[OccludeeBlockPixelCull]++;
 	}
 	// Not visible
 	return false;
@@ -2952,7 +2719,7 @@ bool Rasterizer::readBackDepth(unsigned char *target, SDOCCommon::DumpImageMode 
 
 	if (mode == DumpBlockMask)
 	{
-		memset(target, 0, sizeof(unsigned char) * 512 * 1024);
+		memset(target, 0, sizeof(unsigned char) * m_height * m_width);
 		int numofMinusOne = 0;
 		uint64_t minusOne = -1;
 
@@ -3015,6 +2782,214 @@ bool Rasterizer::readBackDepth(unsigned char *target, SDOCCommon::DumpImageMode 
 	if (DebugOccluderOccludee) 
 	{
 		LOGI("blockY %d blockX %d  m_width %d Height %d m_blockSize %d interleave %d m_HizBufferSize %d OccNum %d", m_blocksY , m_blocksX , m_width , m_height ,  m_blockSize , mInterleave.CurrentFrameInterleaveDrawing , m_HizBufferSize , mCurrValidOccluderNum );
+
+			if (PrintOccludeeState && (DebugData[OccludeeQueryTotal] > 0 || DebugData[OccluderQueryTotal] > 0))
+			{
+				bool specialDebug = 0;
+				if (specialDebug)
+				{
+
+
+					LOGI(" QuadProcessed:           %d", DebugData[QuadProcessed]);
+					LOGI(" QuadToTriangleMerge:           %d", DebugData[QuadToTriangleMerge]);
+					LOGI(" QuadToTriangleSplit:           %d", DebugData[QuadToTriangleSplit]);
+
+
+
+					LOGI("Query BlockAABBClipToZero:           %d", DebugData[BlockAABBClipToZero]);
+					LOGI("Query BlockRenderPartial:           %d", DebugData[BlockRenderPartial]);
+					LOGI("Query BlockRenderFull:           %d", DebugData[BlockRenderFull]);
+					LOGI("Query BlockMaxLessThanMinCull:           %d", DebugData[BlockMaxLessThanMinCull]);
+					LOGI("Query BlockMaskJointZeroCull:           %d", DebugData[BlockMaskJointZeroCull]);
+					LOGI("Query BlockTotalPrimitives:           %d", DebugData[BlockTotalPrimitives]);
+
+				}
+				else {
+					int allOccludeeQuery = DebugData[OccludeeQueryTotal];
+
+
+					LOGI("*************************************");
+
+
+					LOGI("Render P4QuadSplit       %d", DebugData[P4QuadSplit]);
+					LOGI("Render P4QuadFrustumCull       %d", DebugData[P4QuadFrustumCull]);
+					LOGI("Render P4QuadFrustumPass       %d", DebugData[P4QuadFrustumPass]);
+
+					LOGI("Query QueryBlockDoWhileIfSave       %d", DebugData[QueryBlockDoWhileIfSave]);
+					LOGI("Query OccludeeFrustumCull	%d", DebugData[OccludeeFrustumCull]);
+					LOGI("Query OccludeeFastBlockHizCull	%d", DebugData[OccludeeFastBlockHizCull]);
+					LOGI("Query OccludeeBlockPixelCull	%d", DebugData[OccludeeBlockPixelCull]);
+					LOGI("Query OccludeeFastRowBitCull	%d", DebugData[OccludeeFastRowBitCull]);
+					this->DebugData[OccludeeTotalCull] =
+						DebugData[OccludeeFrustumCull] 
+						+ DebugData[OccludeeFastBlockHizCull] 
+						+ DebugData[OccludeeBlockPixelCull]
+						+ DebugData[OccludeeFastRowBitCull];					
+					LOGI("Query OccludeeTotalCull	%d", DebugData[OccludeeTotalCull]);
+					LOGI("Query OccludeeQueryMaxPass	%d", DebugData[OccludeeQueryMaxPass]);
+					LOGI("Query OccludeeNearClipPass	%d", DebugData[OccludeeNearClipPass]);
+					LOGI("Query OccludeeFastBlockEmptyPass	%d", DebugData[OccludeeFastBlockEmptyPass]);
+					LOGI("Query OccludeeQuerySlowPath1**	%d", DebugData[OccludeeQuerySlowPath1]);
+					LOGI("Query OccludeeQuerySlowPath2**	%d", DebugData[OccludeeQuerySlowPath2]);
+					
+					LOGI("Query OccludeeBlockMaskPass	%d", DebugData[OccludeeBlockMaskPass]);
+					LOGI("Query OccludeeBlockPixelPass	%d", DebugData[OccludeeBlockPixelPass]);
+					int totalPass = 0;
+					totalPass += DebugData[OccludeeNearClipPass];
+					totalPass += DebugData[OccludeeFastBlockEmptyPass];
+					totalPass += DebugData[OccludeeBlockMaskPass];
+					totalPass += DebugData[OccludeeBlockPixelPass];
+					totalPass += DebugData[OccludeeQueryMaxPass];
+					LOGI("Query OccludeeTotalPass:       %d/%d ", totalPass, allOccludeeQuery);					
+					LOGI("Query OccludeeQuery2d:          %d/%d ", DebugData[OccludeeQuery2d], allOccludeeQuery);
+					LOGI("Query OccludeeOnePixelExpandCheck -->   %d", DebugData[OccludeeOnePixelExpandCheck]);
+
+					LOGI("Query BlockRowCheck   %d", DebugData[BlockRowCheck]);
+
+					LOGI("Query MaxOccludeeZ   %d", DebugData[MaxOccludeeZ]);
+
+
+
+					LOGI("Query OccluderQueryMaxPass     %d", DebugData[OccluderQueryMaxPass]);
+					LOGI("Render OccluderCulled          %d", DebugData[OccluderCulled]);
+					LOGI("Render OccluderRasterized      %d", DebugData[OccluderRasterized]);
+					LOGI("Render P4CameraNearPlaneCull   %d", DebugData[P4CameraNearPlaneCull]);
+					LOGI("Render P4BackFaceCull          %d", DebugData[P4BackFaceCull]);
+					LOGI("Render P4FrustumCull           %d", DebugData[P4FrustumCull]);
+					LOGI("Render P4EarlyHizCull          %d", DebugData[P4EarlyHizCull]);
+
+					LOGI("Render PrimitiveCameraNearPlaneCull   %d", DebugData[PrimitiveCameraNearPlaneCull]);
+					LOGI("Render PrimitiveFrustumCull           %d", DebugData[PrimitiveFrustumCull]);
+
+					LOGI("Render PrimitiveBackFaceCull          %d", DebugData[PrimitiveBackFaceCull]);
+
+					int p4Total = std::max<int>(1, DebugData[P4DrawTriangle]);
+					LOGI("Render P4Rasterized              %d   Ratio to Total DrawTriangle %d%%", DebugData[P4Rasterized], 100 * DebugData[P4Rasterized] / p4Total);
+					LOGI("Render P4Total                   %d", DebugData[P4Total]);
+					LOGI("Render P4PassFrustumCull                   %d", DebugData[P4PassFrustumCull]);
+
+
+
+					LOGI("Render P4DrawTriangle            %d", DebugData[P4DrawTriangle]);
+					LOGI("Render P4PassCull            %d", DebugData[P4PassCull]);
+
+					LOGI("Render P4Degenerate(valid0)      %d", DebugData[P4Valid0]);
+					if (DebugData[P4Rasterized] > 0) {
+						LOGI("Render P4Valid1                  %d    Ratio %d%% ", DebugData[P4Valid1], DebugData[P4Valid1] * 100 / DebugData[P4Rasterized]);
+						LOGI("Render P4Valid2                  %d    Ratio %d%% ", DebugData[P4Valid2], DebugData[P4Valid2] * 100 / DebugData[P4Rasterized]);
+						LOGI("Render P4Valid3                  %d    Ratio %d%% ", DebugData[P4Valid3], DebugData[P4Valid3] * 100 / DebugData[P4Rasterized]);
+						LOGI("Render P4Valid4                  %d    Ratio %d%% ", DebugData[P4Valid4], DebugData[P4Valid4] * 100 / DebugData[P4Rasterized]);
+					}
+
+
+					LOGI("Render P4NearClipInput                   %d", DebugData[P4NearClipInput]);
+					LOGI("Render PrimitiveNearClipeRasterized      %d", DebugData[PrimitiveNearClipeRasterized]);
+
+
+					LOGI("Render PrimitiveEarlyHiZCull              %d", DebugData[PrimitiveEarlyHiZCull]);
+					LOGI("Render PrimitiveDegenerateCull             %d", DebugData[PrimitiveDegenerateCull]);
+					LOGI("Render PrimitiveTotalInput                %d", DebugData[PrimitiveTotalInput]);
+					int primitiveTotalInput = std::max<int>(1, DebugData[PrimitiveTotalInput]);
+					LOGI("Render PrimitiveRasterizedNum             %d  Ratio %d%%", DebugData[PrimitiveRasterizedNum], 100 * DebugData[PrimitiveRasterizedNum] / primitiveTotalInput);
+
+					LOGI("Render Primitive total culled             %d",
+						DebugData[PrimitiveEarlyHiZCull]
+						+ DebugData[PrimitiveCameraNearPlaneCull]
+						+ DebugData[PrimitiveFrustumCull]
+						+ DebugData[PrimitiveBackFaceCull]
+						+ DebugData[PrimitiveDegenerateCull]);
+
+
+
+					LOGI("Render BlockDoWhileIfSave                         %d", DebugData[BlockDoWhileIfSave]);
+					LOGI("Render BlockTotal                         %d", DebugData[BlockTotal]);
+					int blockTotal = std::max<int>(1, DebugData[BlockTotal]);
+					LOGI("Render BlockConvexRow10CullOverhead            %d   Overhead Ratio to Total %d%%", DebugData[BlockConvexRow10CullOverhead], DebugData[BlockConvexRow10CullOverhead] * 100 / blockTotal);
+
+
+					LOGI("****Render BlockConvexRow00Cull                         %d", DebugData[BlockConvexRow00Cull]);
+					LOGI("****Render BlockConvexRow10Cull                         %d", DebugData[BlockConvexRow10Cull]);
+					LOGI("****Render BlockConvexEdge24Cull                         %d", DebugData[BlockConvexEdge24Cull]);
+					LOGI("****Render BlockConvexEdge31Cull                         %d", DebugData[BlockConvexEdge31Cull]);
+
+
+					LOGI("Render  All Convex cull ratio:           ---->     %d%%",
+						(DebugData[BlockConvexRow00Cull]
+							+ DebugData[BlockConvexRow10Cull]
+							+ DebugData[BlockConvexEdge24Cull]
+							+ DebugData[BlockConvexEdge31Cull])
+						* 100 / blockTotal);
+
+
+					LOGI("Render BlockRenderTotal %d%% + BlockMaxLessThanMinCull %d%% + BlockMaskJointZeroCull %d%% + BlockPrimitiveMaxLessThanMinCull %d%%  + BlockOneSureZeroCull %d%%  + BlockConvexRow10Cull %d%%  =  %d",
+						100 * DebugData[BlockRenderTotal] / blockTotal,
+						100 * DebugData[BlockMaxLessThanMinCull] / blockTotal,
+						100 * DebugData[BlockMaskJointZeroCull] / blockTotal,
+						100 * DebugData[BlockPrimitiveMaxLessThanMinCull] / blockTotal,
+						100 * DebugData[BlockOneSureZeroCull] / blockTotal,
+						100 * DebugData[BlockConvexRow10Cull] / blockTotal,
+						DebugData[BlockRenderTotal] +
+						DebugData[BlockMaxLessThanMinCull] +
+						DebugData[BlockMaskJointZeroCull] +
+						DebugData[BlockPrimitiveMaxLessThanMinCull] +
+						DebugData[BlockOneSureZeroCull] +
+						DebugData[BlockConvexRow10Cull]
+					);
+
+					LOGI("Render BlockPrimitiveMaxLessThanMinCull   %d", DebugData[BlockPrimitiveMaxLessThanMinCull]);
+					LOGI("Render BlockMaskJointZeroCull             %d", DebugData[BlockMaskJointZeroCull]);
+					LOGI("Render BlockMaxLessThanMinCull            %d", DebugData[BlockMaxLessThanMinCull]);
+
+					LOGI("Render BlockRenderTotal                   %d", DebugData[BlockRenderTotal]);
+					LOGI("Render BlockRenderPartial                 %d", DebugData[BlockRenderPartial]);
+					LOGI("Render BlockAABBClipToZero                %d", DebugData[BlockAABBClipToZero]);
+					LOGI("Render BlockRenderFull                    %d", DebugData[BlockRenderFull]);
+					LOGI("Render BlockRenderInitial                 %d", DebugData[BlockRenderInitial]);
+
+
+					LOGI("Render BlockRenderInitialPartial          %d", DebugData[BlockRenderInitialPartial]);
+					LOGI("Render BlockRenderInitialFull             %d", DebugData[BlockRenderInitialFull]);
+
+
+
+					LOGI("Render BlockMinCompute4                   %d", DebugData[BlockMinCompute4]);
+					LOGI("Render BlockMinUseOne                     %d", DebugData[BlockMinUseOne]);
+
+
+
+
+
+
+					DebugData[BlockMinValidDepth] = 65535;
+					DebugData[BlockEmptyBlock] = 0;
+					for (uint32_t blockY = 0; blockY < m_blocksY; ++blockY)
+					{
+						int base = blockY * m_blocksX;
+						for (uint32_t blockX = 0; blockX < m_blocksX; ++blockX)
+						{
+							int hizIdx = blockX + base;
+							uint16_t hiz = m_pHiz[hizIdx];
+							if (hiz > MIN_UPDATED_BLOCK_DEPTH2)
+							{
+								DebugData[BlockMinValidDepth] = std::min<uint16_t>(DebugData[BlockMinValidDepth], hiz);
+							}
+
+							if (hiz == 0)
+							{
+								DebugData[BlockEmptyBlock]++;
+								continue;
+							}
+						}
+					}
+					LOGI("Render BlockMinValidDepth %d", DebugData[BlockMinValidDepth]);
+					LOGI("Render BlockEmptyBlock %d over total  %d", DebugData[BlockEmptyBlock], m_blockSize);
+
+
+
+				}
+				memset(DebugData, 0, DEBUG_DATA_SIZE * sizeof(uint32_t));
+			}
+
 	}
 
 
@@ -3031,7 +3006,7 @@ bool Rasterizer::readBackDepth(unsigned char *target, SDOCCommon::DumpImageMode 
 			{
 				uint64_t * input = (uint64_t*)target;
 				__m128i *extraRoot = (__m128i*) &this->m_depthBufferPointLines[0];
-				int totalBlocks = (int)( this->m_totalPixels >> 3);
+				int totalBlocks = m_blockSize;
 				for (int idx = 0; idx < totalBlocks; idx++) 
 				{
 					input[idx] = applyToneMapping(extraRoot[idx], mode);
@@ -3171,17 +3146,17 @@ bool Rasterizer::readBackDepth(unsigned char *target, SDOCCommon::DumpImageMode 
 			imgMetaData[0] = currentSize;
 			//sort according to depth value
 			std::vector<uint64_t> all;
-			mOccludeeResults.reserve(currentSize + (currentSize >> 1));
+			all.reserve(currentSize >> 1);
 			for (int idx = 1; idx < currentSize; idx += 2)
 			{
-				uint64_t merge = mOccludeeResults[idx] | ((uint64_t)idx << 8);
-				mOccludeeResults.push_back(merge);
+				uint64_t merge = mOccludeeResults[idx] | ((uint64_t)idx << 8); //depth << 48 + idx << 8 + result
+				all.push_back(merge);
 			}
-			std::sort(mOccludeeResults.begin()+ currentSize, mOccludeeResults.end());//ascending order
+			std::sort(all.begin(), all.end());//ascending order
 			int metaDataIdx = 1;
-			for (int idx = currentSize; idx < mOccludeeResults.size(); idx++)
+			for (int idx = 0; idx < all.size(); idx++)
 			{
-				int currentIdx = (mOccludeeResults[idx] >> 8) & 0xFFFFFFFF;
+				int currentIdx = (all[idx] >> 8) & 0xFFFFFFFF;
 				imgMetaData[metaDataIdx++] = mOccludeeResults[currentIdx - 1];
 				imgMetaData[metaDataIdx++] = mOccludeeResults[currentIdx];
 			}
@@ -3925,7 +3900,8 @@ inline static void Transpose(const float ** triangleData, float *dataf)
 
 static int GetValidPrimitiveNum(__m128 primitiveValid) 
 {
-	uint32_t * v = (uint32_t *)&primitiveValid;
+	alignas(16) uint32_t v[4];
+	_mm_store_si128(reinterpret_cast<__m128i*>(v), _mm_castps_si128(primitiveValid));
 	return (v[0] >> 31) + (v[1] >> 31) + (v[2] >> 31) + (v[3] >> 31);
 }
 
@@ -4352,7 +4328,7 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 		{
 			depthLeftBase = _mm_fmadd_ps_soc(depthDx, xFactors[xIncrease], _mm_set1_ps(depthPlaneData[0]));
 			float halfSlope = slope * 0.5f;
-			depthLeftBase = _mm_add_ps(depthLeftBase, _mm_setr_ps(0, 0, halfSlope, halfSlope));
+			depthLeftBase = _mm_add_ps(depthLeftBase, _mm_shuffle_ps_1010_soc(_mm_setzero_ps(), _mm_set1_ps(halfSlope)));
 		}
 		else
 		{
@@ -4413,6 +4389,9 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 		uint32_t blockY = blockMinY;
 		uint32_t anythingDraw = 0;
 		__m128 edgeOffsetMin = _mm_fmadd_ps_soc(edgeNormalX, _mm_set1_ps(float(blockMinX)), edgeOffset);
+		
+		__m128i primitiveMinZv = _mm_set1_epi32(primitiveMinZf);
+		__m128i primitiveMaxZv = _mm_set1_epi32(primitiveMaxZf);
 		while(true)
 		{
 
@@ -4423,7 +4402,9 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 
 			
 			uint32_t blockRowOffset = 0;
-			for (uint32_t blockX = blockMinX; blockX <= blockMaxX; blockX++,  offset = _mm_add_ps(edgeNormalX, offset))
+			__m128 rowDepthLeftF_vrs = _mm_fmadd_ps_soc(depthDx, _mm_set1_ps((float)blockMinX), rowDepthLeftBtm);
+			for (uint32_t blockX = blockMinX; blockX <= blockMaxX; blockX++,  offset = _mm_add_ps(edgeNormalX, offset), rowDepthLeftF_vrs = _mm_add_ps(rowDepthLeftF_vrs, depthDx))
+
 			{
 				__m128i lookup = _mm_cvttps_epi32(offset);
 
@@ -4486,16 +4467,17 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 				//drawQuad routine
 				if (VRS_X4Y4_Optimzation)
 				{
-					__m128i rowDepthLeft = _mm_castps_si128(_mm_fmadd_ps_soc(depthDx, _mm_set1_ps((float)blockX), rowDepthLeftBtm));
+					// P0: use precomputed vectors instead of repeated _mm_set1_epi32 in loop
+					__m128i rowDepthLeft = _mm_castps_si128(rowDepthLeftF_vrs); // replace per-iteration FMA with incremental accumulation
 
-					rowDepthLeft = _mm_max_epi32(rowDepthLeft, _mm_set1_epi32(primitiveMinZf));
-					rowDepthLeft = _mm_min_epi32(rowDepthLeft, _mm_set1_epi32(primitiveMaxZf));
 
+					rowDepthLeft = _mm_max_epi32(rowDepthLeft, primitiveMinZv);
+					rowDepthLeft = _mm_min_epi32(rowDepthLeft, primitiveMaxZv);
 
 					__m128i depthData = packDepthPremultipliedVRS12Fast(rowDepthLeft);
 					
-					uint16_t * depth16 = (uint16_t*)&depthData;
-
+					alignas(16) uint16_t depth16[8];
+					_mm_storeu_si128((__m128i*)depth16, depthData);
 					uint16_t maxBlockDepth = depth16[maxBlockIdx];
 					if (bDebug_ValidateMinMaxBlockIdx) {
 						uint16_t minDepth = depth16[minBlockIdx];
@@ -4508,7 +4490,6 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 					{
 						uint64_t *outBlockData = outblockRowData + blockX * PairBlockNum;
 
-						uint32_t * depth32 = (uint32_t*)depth16;
 						if (PairBlockNum <= CheckerBoardVizMaskApproach)
 						{
 							if (blockMask != -1)
@@ -4537,12 +4518,12 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 								{
 									__m128i* out = (__m128i*)outBlockData;
 									if (bDrawOccludee && Rasterize_ClippedOccludee_AS_OCCLUDER && !bDrawOccludeeToDepthMap) {
-										updateBlockMSCBPartial_Occludee(depth32, blockMask, out, occluderCache);
+										updateBlockMSCBPartial_Occludee(depthData, blockMask, out, occluderCache);
 										if (occluderCache->mRasterizedOccludeeVisible)
 											return;
 									}
 									else {
-										updateBlockMSCBPartial(depth32, blockMask, out, nullptr, pBlockRowHiZ, maxBlockDepth);
+										updateBlockMSCBPartial(depthData, blockMask, out, nullptr, pBlockRowHiZ, maxBlockDepth);
 									}
 								}
 								else {
@@ -4551,12 +4532,12 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 									uint64_t* maskData = GetMaskData(outBlockData, bit);
 
 									if (bDrawOccludee && Rasterize_ClippedOccludee_AS_OCCLUDER && !bDrawOccludeeToDepthMap) {
-										updateBlockMSCBPartial_Occludee(depth32, blockMask, out, occluderCache);
+										updateBlockMSCBPartial_Occludee(depthData, blockMask, out, occluderCache);
 										if (occluderCache->mRasterizedOccludeeVisible)
 											return;
 									}
 									else {
-										updateBlockMSCBPartial(depth32, blockMask, out, maskData, pBlockRowHiZ, maxBlockDepth);
+										updateBlockMSCBPartial(depthData, blockMask, out, maskData, pBlockRowHiZ, maxBlockDepth);
 									}
 								}
 							}
@@ -4588,6 +4569,8 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 								// All pixels covered => skip edge tests
 
 								uint16_t * pBlockRowHiZMax = pBlockRowHiZ + m_HizBufferSize;
+
+
 								if (minBlockDepth >= pBlockRowHiZMax[0]) //full block update, min is larger than exist max
 								{
 									if (bDrawOccludee && Rasterize_ClippedOccludee_AS_OCCLUDER && !bDrawOccludeeToDepthMap) {
@@ -4600,8 +4583,9 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 										DebugData[BlockRenderInitialFull]++;
 									}
 
-									__m128i	depthBottom = _mm_setr_epi32(depth32[0], depth32[0], depth32[1], depth32[1]);
-									__m128i depthTop = _mm_setr_epi32(depth32[2], depth32[2], depth32[3], depth32[3]);
+
+									__m128i	depthBottom = _mm_unpacklo_epi32(depthData, depthData);
+									__m128i depthTop = _mm_unpackhi_epi32(depthData, depthData);									
 									out[0] = depthBottom;
 									out[1] = depthBottom;
 									out[2] = depthTop;
@@ -4612,14 +4596,15 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 								}
 								else
 								{
-									__m128i	depthBottom = _mm_setr_epi32(depth32[0], depth32[0], depth32[1], depth32[1]);
-									__m128i depthTop = _mm_setr_epi32(depth32[2], depth32[2], depth32[3], depth32[3]);
+
+									__m128i	depthBottom = _mm_unpacklo_epi32(depthData, depthData);
+									__m128i depthTop = _mm_unpackhi_epi32(depthData, depthData);									
 									if (bDrawOccludee && Rasterize_ClippedOccludee_AS_OCCLUDER && !bDrawOccludeeToDepthMap) {
 										__m128i visible = _mm_cmple_epu16_soc(out[0], depthBottom);
 										visible = _mm_or_si128(visible, _mm_cmple_epu16_soc(out[1], depthBottom));
 										visible = _mm_or_si128(visible, _mm_cmple_epu16_soc(out[2], depthTop));
 										visible = _mm_or_si128(visible, _mm_cmple_epu16_soc(out[3], depthTop));
-										if (_mm_anybit_one_soc(visible)) {
+										if (_mm_anymask_one_soc(visible)) {
 											occluderCache->mRasterizedOccludeeVisible = true;
 											return;
 										}
@@ -4647,8 +4632,10 @@ void Rasterizer::drawQuad(__m128* x, __m128* y, __m128* invW, __m128* W,  __m128
 								}
 							}
 							__m128i depthRows[2];
-							depthRows[0] = _mm_setr_epi32(depth32[0], depth32[0], depth32[1], depth32[1]);
-							depthRows[1] = _mm_setr_epi32(depth32[2], depth32[2], depth32[3], depth32[3]);
+							depthRows[0] = _mm_unpacklo_epi32(depthData, depthData);
+
+							depthRows[1] = _mm_unpackhi_epi32(depthData, depthData);
+
 							if (bDrawOccludee && Rasterize_ClippedOccludee_AS_OCCLUDER && !bDrawOccludeeToDepthMap) {
 								occluderCache->mRasterizedOccludeeVisible = updateBlock_Occludee(depthRows, blockMask, (__m128i*)(outBlockData), pBlockRowHiZ);
 								if (occluderCache->mRasterizedOccludeeVisible)
@@ -5137,6 +5124,15 @@ void Rasterizer::rasterize(SDOCCommon::OccluderMesh& raw, OccluderRenderCache* o
 	int faceIdx0 = flip << 1;
 	int faceIdx2 = 2 ^ faceIdx0;
 
+	__m128 mat30 = _mm_set1_ps(matF[12]);
+	__m128 mat31 = _mm_set1_ps(matF[13]);
+	__m128 mat32 = _mm_set1_ps(matF[14]);
+	__m128 mat00 = _mm_set1_ps(matF[0]);
+	__m128 mat01 = _mm_set1_ps(matF[1]);
+	__m128 mat02 = _mm_set1_ps(matF[2]);
+	__m128 mat10 = _mm_set1_ps(matF[4]);
+	__m128 mat11 = _mm_set1_ps(matF[5]);
+	__m128 mat12 = _mm_set1_ps(matF[6]);
 
 	if (PrimitiveDataCompressed  &&raw.QuadSafeBatchNum  > 0)
 	{
@@ -5288,10 +5284,6 @@ void Rasterizer::rasterize(SDOCCommon::OccluderMesh& raw, OccluderRenderCache* o
 			packetsLeft--;
 
 
-			__m128 mat30 = _mm_set1_ps(matF[12]);//  _mm_shuffle_ps_single_index(occluderCache->mat[3], 0);
-			__m128 mat31 = _mm_set1_ps(matF[13]);//_mm_shuffle_ps_single_index(occluderCache->mat[3], 1);
-			__m128 mat32 = _mm_set1_ps(matF[14]);//_mm_shuffle_ps_single_index(occluderCache->mat[3], 2);
-
 			__m128 W[4];
 			W[faceIdx0] = _mm_fmadd_ps_soc(dataArray[0], mat30, _mm_fmadd_ps_soc(dataArray[4], mat31, _mm_fmadd_ps_soc(dataArray[8], mat32, mat33)));
 			W[1] = _mm_fmadd_ps_soc(dataArray[1], mat30, _mm_fmadd_ps_soc(dataArray[5], mat31, _mm_fmadd_ps_soc(dataArray[9], mat32, mat33)));
@@ -5334,17 +5326,11 @@ void Rasterizer::rasterize(SDOCCommon::OccluderMesh& raw, OccluderRenderCache* o
 
 			__m128 X[4], Y[4];
 
-			__m128 mat00 = _mm_set1_ps(matF[0]); //_mm_shuffle_ps_single_index(occluderCache->mat[0], 0);
-			__m128 mat01 = _mm_set1_ps(matF[1]); //_mm_shuffle_ps_single_index(occluderCache->mat[0], 1);
-			__m128 mat02 = _mm_set1_ps(matF[2]); //_mm_shuffle_ps_single_index(occluderCache->mat[0], 2);
 			X[faceIdx0] = _mm_fmadd_ps_soc(dataArray[0], mat00, _mm_fmadd_ps_soc(dataArray[4], mat01, _mm_fmadd_ps_soc(dataArray[8], mat02, mat03)));
 			X[1] = _mm_fmadd_ps_soc(dataArray[1], mat00, _mm_fmadd_ps_soc(dataArray[5], mat01, _mm_fmadd_ps_soc(dataArray[9], mat02, mat03)));
 			X[faceIdx2] = _mm_fmadd_ps_soc(dataArray[2], mat00, _mm_fmadd_ps_soc(dataArray[6], mat01, _mm_fmadd_ps_soc(dataArray[10], mat02, mat03)));
 			X[3] = _mm_fmadd_ps_soc(dataArray[3], mat00, _mm_fmadd_ps_soc(dataArray[7], mat01, _mm_fmadd_ps_soc(dataArray[11], mat02, mat03)));
 
-			__m128 mat10 = _mm_set1_ps(matF[4]); //_mm_shuffle_ps_single_index(occluderCache->mat[1], 0);
-			__m128 mat11 = _mm_set1_ps(matF[5]); //_mm_shuffle_ps_single_index(occluderCache->mat[1], 1);
-			__m128 mat12 = _mm_set1_ps(matF[6]); //_mm_shuffle_ps_single_index(occluderCache->mat[1], 2);
 			Y[faceIdx0] = _mm_fmadd_ps_soc(dataArray[0], mat10, _mm_fmadd_ps_soc(dataArray[4], mat11, _mm_fmadd_ps_soc(dataArray[8], mat12, mat13)));
 			Y[1] = _mm_fmadd_ps_soc(dataArray[1], mat10, _mm_fmadd_ps_soc(dataArray[5], mat11, _mm_fmadd_ps_soc(dataArray[9], mat12, mat13)));
 			Y[faceIdx2] = _mm_fmadd_ps_soc(dataArray[2], mat10, _mm_fmadd_ps_soc(dataArray[6], mat11, _mm_fmadd_ps_soc(dataArray[10], mat12, mat13)));
@@ -5696,10 +5682,6 @@ void Rasterizer::rasterize(SDOCCommon::OccluderMesh& raw, OccluderRenderCache* o
 
 				packetIdx++;
 
-				__m128 mat30 = _mm_set1_ps(matF[12]);// _mm_shuffle_ps_single_index(occluderCache->mat[3], 0);
-				__m128 mat31 = _mm_set1_ps(matF[13]);// _mm_shuffle_ps_single_index(occluderCache->mat[3], 1);
-				__m128 mat32 = _mm_set1_ps(matF[14]);// _mm_shuffle_ps_single_index(occluderCache->mat[3], 2);
-
 				__m128 W[3];
 				W[faceIdx0] = _mm_fmadd_ps_soc(dataArray[0], mat30, _mm_fmadd_ps_soc(dataArray[3], mat31, _mm_fmadd_ps_soc(dataArray[6], mat32, mat33)));
 				W[1] = _mm_fmadd_ps_soc(dataArray[2], mat30, _mm_fmadd_ps_soc(dataArray[5], mat31, _mm_fmadd_ps_soc(dataArray[8], mat32, mat33)));
@@ -5748,17 +5730,11 @@ void Rasterizer::rasterize(SDOCCommon::OccluderMesh& raw, OccluderRenderCache* o
 
 				__m128 X[3], Y[3];
 
-				__m128 mat00 = _mm_set1_ps(matF[0]);// _mm_shuffle_ps_single_index(occluderCache->mat[0], 0);
-				__m128 mat01 = _mm_set1_ps(matF[1]);//_mm_shuffle_ps_single_index(occluderCache->mat[0], 1);
-				__m128 mat02 = _mm_set1_ps(matF[2]);//_mm_shuffle_ps_single_index(occluderCache->mat[0], 2);
 				X[faceIdx0] = _mm_fmadd_ps_soc(dataArray[0], mat00, _mm_fmadd_ps_soc(dataArray[3], mat01, _mm_fmadd_ps_soc(dataArray[6], mat02, mat03)));
 				X[1] = _mm_fmadd_ps_soc(dataArray[2], mat00, _mm_fmadd_ps_soc(dataArray[5], mat01, _mm_fmadd_ps_soc(dataArray[8], mat02, mat03)));
 				X[faceIdx2] = _mm_fmadd_ps_soc(dataArray[1], mat00, _mm_fmadd_ps_soc(dataArray[4], mat01, _mm_fmadd_ps_soc(dataArray[7], mat02, mat03)));
 
 
-				__m128 mat10 = _mm_set1_ps(matF[4]);//_mm_shuffle_ps_single_index(occluderCache->mat[1], 0);
-				__m128 mat11 = _mm_set1_ps(matF[5]);//_mm_shuffle_ps_single_index(occluderCache->mat[1], 1);
-				__m128 mat12 = _mm_set1_ps(matF[6]);//_mm_shuffle_ps_single_index(occluderCache->mat[1], 2);
 				Y[faceIdx0] = _mm_fmadd_ps_soc(dataArray[0], mat10, _mm_fmadd_ps_soc(dataArray[3], mat11, _mm_fmadd_ps_soc(dataArray[6], mat12, mat13)));
 				Y[1] = _mm_fmadd_ps_soc(dataArray[2], mat10, _mm_fmadd_ps_soc(dataArray[5], mat11, _mm_fmadd_ps_soc(dataArray[8], mat12, mat13)));
 				Y[faceIdx2] = _mm_fmadd_ps_soc(dataArray[1], mat10, _mm_fmadd_ps_soc(dataArray[4], mat11, _mm_fmadd_ps_soc(dataArray[7], mat12, mat13)));
@@ -6051,32 +6027,41 @@ void Rasterizer::updateBlockWithMaxZ(__m128 rowDepthLeft, __m128 rowDepthRight, 
 }
 
 #endif
-void Rasterizer::updateBlockMSCBPartial_Occludee(uint32_t* depth32, uint64_t blockMask, __m128i* out, OccluderRenderCache * cache)
+void Rasterizer::updateBlockMSCBPartial_Occludee(__m128i depthData, uint64_t blockMask, __m128i* out, OccluderRenderCache * cache)
 {
+	__m128i	depthBottom = _mm_unpacklo_epi32(depthData, depthData);
+	__m128i	depthTop = _mm_unpackhi_epi32(depthData, depthData);
 #if defined(SDOC_NATIVE_DEBUG)
 	if (true) {
-		__m128i	depthBottom = _mm_setr_epi32(depth32[0], depth32[0], depth32[1], depth32[1]);
-		__m128i	depthTop = _mm_setr_epi32(depth32[2], depth32[2], depth32[3], depth32[3]);
+
 		__m128i interleavedBlockMask = _mm_unpacklo_epi8_soc(blockMask);
+#if defined(_MSC_VER)
 		__m128i out0 = out[0];
 		__m128i new0 = _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthBottom);
+#endif
 		__m128i visible = _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[0], depthBottom));
 		interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-		bool A = _mm_anybit_one_soc(visible);
+#if defined(_MSC_VER)
+		bool A = _mm_anymask_one_soc(visible);
 		__m128i out1 = out[1];
 		__m128i new1 = _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthBottom);
+#endif
 		visible = _mm_or_si128(visible, _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[1], depthBottom)));
 		interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-		bool B = _mm_anybit_one_soc(visible);
+#if defined(_MSC_VER)
+		bool B = _mm_anymask_one_soc(visible);
 		__m128i out2 = out[2];
 		__m128i new2 = _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthBottom);
+#endif
 		visible = _mm_or_si128(visible, _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[2], depthTop)));
 		interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-		bool C = _mm_anybit_one_soc(visible);
+#if defined(_MSC_VER)
+		bool C = _mm_anymask_one_soc(visible);
 		__m128i out3 = out[3];
 		__m128i new3 = _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthBottom);
+#endif
 		visible = _mm_or_si128(visible, _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[3], depthTop)));
-		cache->mRasterizedOccludeeVisible = _mm_anybit_one_soc(visible);
+		cache->mRasterizedOccludeeVisible = _mm_anymask_one_soc(visible);
 		if (cache->mRasterizedOccludeeVisible) {
 			//std::cout << "*****rasterize occludee which is visible" << std::endl;
 			return;
@@ -6085,36 +6070,39 @@ void Rasterizer::updateBlockMSCBPartial_Occludee(uint32_t* depth32, uint64_t blo
 	}
 #endif
 
-	__m128i	depthBottom = _mm_setr_epi32(depth32[0], depth32[0], depth32[1], depth32[1]);
-	__m128i	depthTop = _mm_setr_epi32(depth32[2], depth32[2], depth32[3], depth32[3]);
 	__m128i interleavedBlockMask = _mm_unpacklo_epi8_soc(blockMask);
-	__m128i visible = _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[0], depthBottom));
-	interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-	visible = _mm_or_si128(visible, _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[1], depthBottom)));
-	interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-	visible = _mm_or_si128(visible, _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[2], depthTop)));
-	interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-	visible = _mm_or_si128(visible, _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[3], depthTop)));
-	cache->mRasterizedOccludeeVisible = _mm_anybit_one_soc(visible);
+	// parallel mask precomputation, break serial shift dependency chain
+	__m128i mask0 = _mm_srai_epi16(interleavedBlockMask, 15);
+	__m128i mask1 = _mm_srai_epi16(_mm_slli_epi16(interleavedBlockMask, 2), 15);
+	__m128i mask2 = _mm_srai_epi16(_mm_slli_epi16(interleavedBlockMask, 4), 15);
+	__m128i mask3 = _mm_srai_epi16(_mm_slli_epi16(interleavedBlockMask, 6), 15);
+	__m128i visible = _mm_and_si128(mask0, _mm_cmple_epu16_soc(out[0], depthBottom));
+	visible = _mm_or_si128(visible, _mm_and_si128(mask1, _mm_cmple_epu16_soc(out[1], depthBottom)));
+	visible = _mm_or_si128(visible, _mm_and_si128(mask2, _mm_cmple_epu16_soc(out[2], depthTop)));
+	visible = _mm_or_si128(visible, _mm_and_si128(mask3, _mm_cmple_epu16_soc(out[3], depthTop)));
+	cache->mRasterizedOccludeeVisible = _mm_anymask_one_soc(visible);
 }
 
-void Rasterizer::updateBlockMSCBPartial(uint32_t * depth32, uint64_t blockMask, __m128i* out, uint64_t* maskData, uint16_t * pBlockRowHiZ, uint16_t maxBlockDepth)
+void Rasterizer::updateBlockMSCBPartial(__m128i depthData, uint64_t blockMask, __m128i* out, uint64_t* maskData, uint16_t * pBlockRowHiZ, uint16_t maxBlockDepth)
 {
 	mUpdateAnyBlock = true;
-	__m128i	depthBottom = _mm_setr_epi32(depth32[0], depth32[0], depth32[1], depth32[1]);
-	__m128i	depthTop = _mm_setr_epi32(depth32[2], depth32[2], depth32[3], depth32[3]);
+	// replace _mm_setr_epi32 with unpacklo/hi_epi32, avoid scalar-to-SIMD conversion
+	__m128i	depthBottom = _mm_unpacklo_epi32(depthData, depthData);
+	__m128i	depthTop = _mm_unpackhi_epi32(depthData, depthData);
 
 	if (pBlockRowHiZ[0] != 0) 
 	{
 		__m128i interleavedBlockMask = _mm_unpacklo_epi8_soc(blockMask);
 
-		out[0] = _mm_max_epu16(out[0], _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthBottom));
-		interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-		out[1] = _mm_max_epu16(out[1], _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthBottom));
-		interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-		out[2] = _mm_max_epu16(out[2], _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthTop));
-		interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-		out[3] = _mm_max_epu16(out[3], _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthTop));
+		// parallel mask precomputation, break serial shift dependency chain
+		__m128i mask0 = _mm_srai_epi16(interleavedBlockMask, 15);
+		__m128i mask1 = _mm_srai_epi16(_mm_slli_epi16(interleavedBlockMask, 2), 15);
+		__m128i mask2 = _mm_srai_epi16(_mm_slli_epi16(interleavedBlockMask, 4), 15);
+		__m128i mask3 = _mm_srai_epi16(_mm_slli_epi16(interleavedBlockMask, 6), 15);
+		out[0] = _mm_max_epu16(out[0], _mm_and_si128(mask0, depthBottom));
+		out[1] = _mm_max_epu16(out[1], _mm_and_si128(mask1, depthBottom));
+		out[2] = _mm_max_epu16(out[2], _mm_and_si128(mask2, depthTop));
+		out[3] = _mm_max_epu16(out[3], _mm_and_si128(mask3, depthTop));
 
 		if (PairBlockNum == CheckerBoardVizMaskApproach) 
 		{
@@ -6156,10 +6144,15 @@ void Rasterizer::updateBlockMSCBPartial(uint32_t * depth32, uint64_t blockMask, 
 		__m128i interleavedBlockMask;
 		interleavedBlockMask = _mm_unpacklo_epi8_soc(blockMask);
 
-		out[0] = _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthBottom); interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-		out[1] = _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthBottom); interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-		out[2] = _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthTop); interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 2);
-		out[3] = _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), depthTop);
+		// parallel mask precomputation, break serial shift dependency chain
+		__m128i mask0 = _mm_srai_epi16(interleavedBlockMask, 15);
+		__m128i mask1 = _mm_srai_epi16(_mm_slli_epi16(interleavedBlockMask, 2), 15);
+		__m128i mask2 = _mm_srai_epi16(_mm_slli_epi16(interleavedBlockMask, 4), 15);
+		__m128i mask3 = _mm_srai_epi16(_mm_slli_epi16(interleavedBlockMask, 6), 15);
+		out[0] = _mm_and_si128(mask0, depthBottom);
+		out[1] = _mm_and_si128(mask1, depthBottom);
+		out[2] = _mm_and_si128(mask2, depthTop);
+		out[3] = _mm_and_si128(mask3, depthTop);
 		return; // init-partial update, hizMin is surely zero. No need to calculate				
 	}
 
@@ -6275,7 +6268,7 @@ bool Rasterizer::updateBlock_Occludee(__m128i* depthRows, uint64_t blockMask, __
 				visible = _mm_or_si128(visible, _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[5], depthTop))); interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 1);
 				visible = _mm_or_si128(visible, _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[6], depthTop))); interleavedBlockMask = _mm_slli_epi16(interleavedBlockMask, 1);
 				visible = _mm_or_si128(visible, _mm_and_si128(_mm_srai_epi16(interleavedBlockMask, 15), _mm_cmple_epu16_soc(out[7], depthTop)));
-				if (_mm_anybit_one_soc(visible)) {
+				if (_mm_anymask_one_soc(visible)) {
 					return true;
 				}
 			}
@@ -6298,7 +6291,7 @@ bool Rasterizer::updateBlock_Occludee(__m128i* depthRows, uint64_t blockMask, __
 				visible = _mm_or_si128(visible, _mm_cmple_epu16_soc(out[5], depthTop));
 				visible = _mm_or_si128(visible, _mm_cmple_epu16_soc(out[6], depthTop));
 				visible = _mm_or_si128(visible, _mm_cmple_epu16_soc(out[7], depthTop));
-				if (_mm_anybit_one_soc(visible)) {
+				if (_mm_anymask_one_soc(visible)) {
 					return true;
 				}
 			}
@@ -7061,7 +7054,8 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 		{
 			depthLeftBase = _mm_fmadd_ps_soc(depthDx, xFactors[xIncrease], _mm_set1_ps(depthPlaneData[0]));
 			float halfSlope = slope * 0.5f;
-			depthLeftBase = _mm_add_ps(depthLeftBase, _mm_setr_ps(0, 0, halfSlope, halfSlope));
+			depthLeftBase = _mm_add_ps(depthLeftBase, _mm_shuffle_ps_1010_soc(_mm_setzero_ps(), _mm_set1_ps(halfSlope))); 
+
 		}
 		else
 		{
@@ -7127,6 +7121,10 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 		uint32_t NextBlockX = blockMinX;
 		int32_t CurrentSkip = 0;
 
+
+
+		__m128i primitiveMinZv = _mm_set1_epi32(primitiveMinZf);
+		__m128i primitiveMaxZv = _mm_set1_epi32(primitiveMaxZf);
 
 		if (DebugOccluderOccludee)
 		{
@@ -7243,14 +7241,15 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 				{
 					__m128i rowDepthLeft = _mm_castps_si128(_mm_fmadd_ps_soc(depthDx, _mm_set1_ps((float)blockX), rowDepthLeftOffsetY));
 
-					rowDepthLeft = _mm_max_epi32(rowDepthLeft, _mm_set1_epi32(primitiveMinZf));
-					rowDepthLeft = _mm_min_epi32(rowDepthLeft, _mm_set1_epi32(primitiveMaxZf));
+					rowDepthLeft = _mm_max_epi32(rowDepthLeft, primitiveMinZv);
+					rowDepthLeft = _mm_min_epi32(rowDepthLeft, primitiveMaxZv);
 
 					__m128i depthData = packDepthPremultipliedVRS12Fast(rowDepthLeft);
 
-					uint16_t * depth16 = (uint16_t*)&depthData;
-
+					alignas(16) uint16_t depth16[8];
+					_mm_storeu_si128((__m128i*)depth16, depthData);
 					uint16_t maxBlockDepth = depth16[maxBlockIdx];
+
 					if (bDebug_ValidateMinMaxBlockIdx) {
 						uint16_t minDepth = depth16[minBlockIdx];
 						for (int xx = 0; xx < 8; xx++) {
@@ -7271,7 +7270,6 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 
 						uint64_t *outBlockData = outblockRowData + blockX * PairBlockNum;
 
-						uint32_t * depth32 = (uint32_t*)depth16;
 						if (PairBlockNum <= CheckerBoardVizMaskApproach)
 						{
 							bool small_primitive_check = false;
@@ -7303,12 +7301,12 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 								{
 									__m128i* out = (__m128i*)outBlockData;
 									if (bDrawOccludee && Rasterize_ClippedOccludee_AS_OCCLUDER && !bDrawOccludeeToDepthMap) {
-										updateBlockMSCBPartial_Occludee(depth32, blockMask, out, occluderCache);
+										updateBlockMSCBPartial_Occludee(depthData, blockMask, out, occluderCache);
 										if (occluderCache->mRasterizedOccludeeVisible && !bDrawOccludeeToDepthMap)
 											return;
 									}
 									else {
-										updateBlockMSCBPartial(depth32, blockMask, out, nullptr, pBlockRowHiZ, maxBlockDepth);
+										updateBlockMSCBPartial(depthData, blockMask, out, nullptr, pBlockRowHiZ, maxBlockDepth);
 									}
 								}
 								else {
@@ -7317,12 +7315,12 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 									uint64_t* maskData = GetMaskData(outBlockData, bit);
 
 									if (bDrawOccludee && Rasterize_ClippedOccludee_AS_OCCLUDER && !bDrawOccludeeToDepthMap) {
-										updateBlockMSCBPartial_Occludee(depth32, blockMask, out, occluderCache);
+										updateBlockMSCBPartial_Occludee(depthData, blockMask, out, occluderCache);
 										if (occluderCache->mRasterizedOccludeeVisible && !bDrawOccludeeToDepthMap)
 											return;
 									}
 									else {
-										updateBlockMSCBPartial(depth32, blockMask, out, maskData, pBlockRowHiZ, maxBlockDepth);
+										updateBlockMSCBPartial(depthData, blockMask, out, maskData, pBlockRowHiZ, maxBlockDepth);
 									}
 								}
 							}
@@ -7363,6 +7361,9 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 								// All pixels covered => skip edge tests
 
 								uint16_t * pBlockRowHiZMax = pBlockRowHiZ + m_HizBufferSize;
+
+								__m128i	depthBottom = _mm_unpacklo_epi32(depthData, depthData);
+								__m128i depthTop = _mm_unpackhi_epi32(depthData, depthData);
 								if (minBlockDepth >= pBlockRowHiZMax[0]) //full block update, min is larger than exist max
 								{
 									if (DebugOccluderOccludee) {
@@ -7378,8 +7379,6 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 										return;
 									}
 									else {
-										__m128i	depthBottom = _mm_setr_epi32(depth32[0], depth32[0], depth32[1], depth32[1]);
-										__m128i depthTop = _mm_setr_epi32(depth32[2], depth32[2], depth32[3], depth32[3]);
 										out[0] = depthBottom;
 										out[1] = depthBottom;
 										out[2] = depthTop;
@@ -7391,15 +7390,13 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 								}
 								else
 								{
-									__m128i	depthBottom = _mm_setr_epi32(depth32[0], depth32[0], depth32[1], depth32[1]);
-									__m128i depthTop = _mm_setr_epi32(depth32[2], depth32[2], depth32[3], depth32[3]);
-
 									if (bDrawOccludee && Rasterize_ClippedOccludee_AS_OCCLUDER && !bDrawOccludeeToDepthMap) {
+
 										__m128i visible = _mm_cmple_epu16_soc(out[0], depthBottom);
 										visible = _mm_or_si128(visible, _mm_cmple_epu16_soc(out[1], depthBottom));
 										visible = _mm_or_si128(visible, _mm_cmple_epu16_soc(out[2], depthTop));
 										visible = _mm_or_si128(visible, _mm_cmple_epu16_soc(out[3], depthTop));
-										if (_mm_anybit_one_soc(visible)) {
+										if (_mm_anymask_one_soc(visible)) {
 											occluderCache->mRasterizedOccludeeVisible = true;
 											return;
 										}
@@ -7425,8 +7422,8 @@ void Rasterizer::drawTriangle( __m128* x, __m128* y, __m128* invW, __m128* W,  _
 								blockMask &= PrimitivePixelClip->GetPixelAABBMask(blockX, blockY);
 							}
 							__m128i depthRows[2];
-							depthRows[0] = _mm_setr_epi32(depth32[0], depth32[0], depth32[1], depth32[1]);
-							depthRows[1] = _mm_setr_epi32(depth32[2], depth32[2], depth32[3], depth32[3]);
+							depthRows[0] = _mm_unpacklo_epi32(depthData, depthData);
+							depthRows[1] = _mm_unpackhi_epi32(depthData, depthData);
 							if (bDrawOccludee && Rasterize_ClippedOccludee_AS_OCCLUDER && !bDrawOccludeeToDepthMap) {
 								occluderCache->mRasterizedOccludeeVisible = updateBlock_Occludee(depthRows, blockMask, (__m128i*)(outBlockData), pBlockRowHiZ);
 								if (occluderCache->mRasterizedOccludeeVisible && !bDrawOccludeeToDepthMap)
@@ -8261,6 +8258,11 @@ void PixelMaskBound::calculateMask()
 			PixelMaxYMask[idx] = CheckerBoardTransform(PixelMaxYMask[idx]);
 		}
 	}
+
+	// Pre-compute X-dimension combined LUT (512B, cache-friendly)
+	for (int sx = 0; sx < 8; sx++)
+		for (int ex = 0; ex < 8; ex++)
+			CombinedXMask[sx][ex] = PixelMinXMask[sx] & PixelMaxXMask[ex];
 }
 
 } // namespace util

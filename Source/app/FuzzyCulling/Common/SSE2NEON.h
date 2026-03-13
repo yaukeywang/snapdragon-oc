@@ -691,12 +691,13 @@ inline __m128 _mm_shuffle_ps_2032(__m128 a, __m128 b)
 ////	float32x2_t b32 = vget_high_f32(vreinterpretq_f32_m128(b));
 ////	return vreinterpretq_m128_f32(vcombine_f32(a32, b32));
 ////}
-////inline __m128 _mm_shuffle_ps_1010_soc(__m128 a, __m128 b)
-////{
-////	float32x2_t a10 = vget_low_f32(vreinterpretq_f32_m128(a));
-////	float32x2_t b10 = vget_low_f32(vreinterpretq_f32_m128(b));
-////	return vreinterpretq_m128_f32(vcombine_f32(a10, b10));
-////}
+inline __m128 _mm_shuffle_ps_1010_soc(__m128 a, __m128 b)
+{
+	float32x2_t a10 = vget_low_f32(vreinterpretq_f32_m128(a));
+	float32x2_t b10 = vget_low_f32(vreinterpretq_f32_m128(b));
+	return vreinterpretq_m128_f32(vcombine_f32(a10, b10));
+}
+
 // NEON does not support a general purpose permute intrinsic
 // Currently I am not sure whether the C implementation is faster or slower than the NEON version.
 // Note, this has to be expanded as a template because the shuffle value must be an immediate value.
@@ -2167,6 +2168,24 @@ inline __m128i _mm_cmplt_epu16_soc(const __m128i &a, const __m128i &b)
 inline __m128i _mm_cmplt_epu8_soc(const __m128i &a, const __m128i &b)
 {
 	return vcltq_u8(a, b);  //supported in v7/A32/A64
+}
+
+
+inline bool _mm_anymask_one_soc(const __m128i& a)
+{
+	// Convert SSE wrapper to NEON byte vector (shim-provided)
+	uint8x16_t u8 = vreinterpretq_u8_m128i(a);
+#if defined(__aarch64__)
+	// A64: horizontal max across 4x u32 lanes
+	return vmaxvq_u32(vreinterpretq_u32_u8(u8)) != 0;
+#else
+	// A32: OR-reduce 4x u32 lanes -> scalar
+	uint32x4_t u32 = vreinterpretq_u32_u8(u8);
+	uint32x2_t lo = vget_low_u32(u32);
+	uint32x2_t hi = vget_high_u32(u32);
+	uint32x2_t or2 = vorr_u32(lo, hi);
+	return ((vget_lane_u32(or2, 0) | vget_lane_u32(or2, 1)) != 0);
+#endif
 }
 
 // Compares for less than abs

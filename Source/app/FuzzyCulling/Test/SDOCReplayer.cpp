@@ -229,13 +229,21 @@ public:
 	}
 
 
-	void loadMatrix(std::ifstream& fin, float* matrix)
+	void loadMatrix(std::ifstream& fin, float* m)
 	{
 		std::string line;
 		for (unsigned int row = 0; row < 4; ++row)
 		{
-			fin >> matrix[row * 4 + 0] >> matrix[row * 4 + 1] >> matrix[row * 4 + 2] >> matrix[row * 4 + 3];
+			fin >> m[row * 4 + 0] >> m[row * 4 + 1] >> m[row * 4 + 2] >> m[row * 4 + 3];
 			std::getline(fin, line);
+		}
+		// Compute determinant of 3x3 matrix
+		float det =
+			m[0] * (m[5] * m[10] - m[6] * m[9]) -
+			m[1] * (m[4] * m[10] - m[6] * m[8]) +
+			m[2] * (m[4] * m[9] - m[5] * m[8]);
+		if (det == 0) {
+			LOGI("error: ************************************************invalid rotation matrix************************************************");
 		}
 	}
 

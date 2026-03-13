@@ -26,6 +26,14 @@ static inline bool NeedFlipFace(const float * modelWorld)
 3. if many static quad occludee, suggest using sdocQueryOccludeeQuad
 4. sdocQueryOccludeeSinglePoint might work for certain cases, up to users to explore
 
+#Capture debug after engine integration
+1. Set up the visual studio project in Windows
+2. Set "developer_debug_capture" to the captured file, which should be put in the same data folder with exist captures
+3. following to debug
+3.1 set "SDOC_DevelopMode" to 1 to enter debug mode
+3.2 enable model checking, set "SaveSimplifyModel" to true, models may be saved to D:\TempSDOC
+3.3 per draw depth checking, set "dumpDrawCall" to 1
+3.4 assign value to "skipTheDraw" if a draw is too unreasonable
  
 ## Guidance on building SDOC for Windows, Mac, Android and iOS.
 

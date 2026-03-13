@@ -282,7 +282,7 @@ bool RapidRasterizer::RasterizeOccludeeMesh(OccluderInput* occ, const float* wor
 
 	OccluderRenderCache cache;
 	 
-	if (occ->modelWorld == nullptr) {
+	if (occ->IsOccludeeMeshModelWorldValid == false) {
 		cache.m_localToClipPointer = m_instance->m_OccludeelocalToClip;
 	}
 	else {
@@ -332,15 +332,7 @@ bool RapidRasterizer::RasterizeOccludeeMesh(OccluderInput* occ, const float* wor
 		}
 
 		if (minExtents == nullptr) {
-			if (occ->modelWorld == nullptr && worldAABB != nullptr) {
-				memcpy(mMinExtentsTemp, worldAABB, 6 * sizeof(float));
-				mMinExtentsTemp[3] -= mMinExtentsTemp[0];
-				mMinExtentsTemp[4] -= mMinExtentsTemp[1];
-				mMinExtentsTemp[5] -= mMinExtentsTemp[2];
-			}
-			else {
-				CalculateMeshMinExtent(occ->nVert, occ->inVtx, mMinExtentsTemp);
-			}
+			CalculateMeshMinExtent(occ->nVert, occ->inVtx, mMinExtentsTemp);
 			minExtents = mMinExtentsTemp;
 		}
 
@@ -482,7 +474,7 @@ void RapidRasterizer::SubmitBakedOccluder(unsigned short * inVtx, const float * 
 	occ->inIdx = nullptr;
 	occ->nVert = 0;
 	occ->nIdx = 0;
-	occ->modelWorld = modelWorld;
+	memcpy(occ->modelWorld, modelWorld, 16 * sizeof(float));
 	occ->backfaceCull = meta[0] & 1;
 
 	occ->priority = occ->backfaceCull;
@@ -501,7 +493,8 @@ bool RapidRasterizer::SubmitRawOccluder(const float * inVtx, const unsigned shor
 	occ->inIdx = inIdx;
 	occ->nVert = nVert;
 	occ->nIdx = nIdx;
-	occ->modelWorld = modelWorld;
+	memcpy(occ->modelWorld, modelWorld, 16 * sizeof(float));
+	
 	occ->backfaceCull = backfaceCull;
 	occ->priority = backfaceCull;
 	occ->IsRawMesh = true;
@@ -518,7 +511,13 @@ bool RapidRasterizer::QueryRawOccludee(const float* inVtx, const unsigned short*
 	occ->inIdx = inIdx;
 	occ->nVert = nVert;
 	occ->nIdx = nIdx;
-	occ->modelWorld = modelWorld;
+	if (modelWorld != nullptr) {
+		occ->IsOccludeeMeshModelWorldValid = true;
+		memcpy(occ->modelWorld, modelWorld, 16 * sizeof(float));
+	}
+	else {
+		occ->IsOccludeeMeshModelWorldValid = false;
+	}
 	occ->backfaceCull = backfaceCull;
 	occ->priority = backfaceCull;
 	occ->IsValidRawMesh = nVert > 0 && nIdx > 0 && (nIdx % 3 == 0);

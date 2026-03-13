@@ -39,111 +39,108 @@ enum SDOCDebug
 	P4Valid4 = 4,
 	P4DrawTriangle = 5,
 
-	FastRowBitCull = 6,
-	FastBlockHizCull = 7,
-	FastBlockEmptyPass = 8,
-	BlockMaskPass = 9,
-	BlockPixelPass = 10,
+	OccludeeFastRowBitCull = 6,
+		OccludeeFastBlockHizCull = 7,
+		OccludeeFastBlockEmptyPass = 8,
+		OccludeeBlockMaskPass = 9,
+		OccludeeBlockPixelPass = 10,
 
-	BlockCorrectMinPass = 11,
-	BlockEmptyPass = 12,
-	BlockPixelCull = 13,
-	FastHalfPlaneCull = 14,
-	OccludeeNearClipPass = 15,
-	OccludeeFrustumCull = 16,
-	OccludeeQuery2d = 17,
-	OccludeeCull = 18,
-	OccludeeOnePixelExpandCheck = 19,
-	QueryBlockDoWhileIfSave = 20,
-	InterleaveQuerySkipPass = 21,
+		BlockCorrectMinPass = 11,
+		OccludeeBlockPixelCull = 13,
+		OccludeeNearClipPass = 15,
+		OccludeeFrustumCull = 16,
+		OccludeeQuery2d = 17,
+		OccludeeTotalCull = 18,
+		OccludeeOnePixelExpandCheck = 19,
 
-	MaxOccludeeZ = 22,
-	BlockRowCheck = 23,
+		OccludeeQueryTotal = 20,
+		QueryBlockDoWhileIfSave = 21,
 
-	FastBlockDepthCompare = 24,
-	FastPlaneBlockDepthCompareSave = 25, 
+		MaxOccludeeZ = 22,
+		BlockRowCheck = 23,
+		OccluderQueryTotal = 25,
+		P4Total = 26,
+		P4Rasterized = 27,
+		PrimitiveTotalInput = 28,
+		PrimitiveRasterizedNum = 29,
+		PrimitiveEarlyHiZCull = 30,
+		BlockRenderTotal = 31,
 
-	P4Total = 26,
-	P4Rasterized = 27,
-	PrimitiveTotalInput = 28,
-	PrimitiveRasterizedNum = 29,
-	PrimitiveEarlyHiZCull = 30,
-	BlockRenderTotal = 31,
+		P4NearClipInput = 32,
+		PrimitiveNearClipeRasterized = 33,
 
-	P4NearClipInput = 32,
-	PrimitiveNearClipeRasterized = 33,
+		OccluderCulled = 34,
+		OccluderRasterized = 35,
+		P4CameraNearPlaneCull = 36,
+		P4BackFaceCull = 37,
+		P4FrustumCull = 38,
+		P4EarlyHizCull = 39,
+		P4EarlyHizCullPass = 40,
+		P4PassCull = 41,
+		P4PassFrustumCull = 42,
 
-	OccluderCulled = 34,
-	OccluderRasterized = 35,
-	P4CameraNearPlaneCull = 36,
-	P4BackFaceCull = 37,
-	P4FrustumCull = 38,
-	P4EarlyHizCull = 39,
-	P4EarlyHizCullPass = 40,
-	P4PassCull = 41,
-	P4PassFrustumCull = 42,
+		PrimitiveCameraNearPlaneCull = 43,
+		PrimitiveBackFaceCull = 44,
+		PrimitiveFrustumCull = 45,
+		PrimitiveValidNum = 46,
+		PrimitiveValidNumQuad = 47,
+		PrimitiveDegenerateCull = 48,
 
-	PrimitiveCameraNearPlaneCull = 43,
-	PrimitiveBackFaceCull = 44,
-	PrimitiveFrustumCull = 45,
-	PrimitiveValidNum = 46,
-	PrimitiveValidNumQuad = 47,
-	PrimitiveDegenerateCull = 48,
+		OccluderFrustumCulled = 49,
 
-	OccluderFrustumCulled = 49,
+		BlockHizQuickCompare = 53,
+		BlockDoWhileIfSave = 54,
+		BlockTotal = 55,
+		BlockConvexRow10Cull = 56,
+		BlockConvexRow10CullOverhead = 57,
+		BlockOneSureZeroCull = 58,
 
-	BlockHizQuickCompare = 53,
-	BlockDoWhileIfSave = 54,
-	BlockTotal = 55,
-	BlockConvexRow10Cull = 56,
-	BlockConvexRow10CullOverhead = 57,
-	BlockOneSureZeroCull = 58,
+		BlockConvexEdge31Cull = 59,
+		BlockConvexEdge31CullRowCheck = 60,
+		BlockConvexEdge31CullRowCheckPass = 80,
+		BlockConvexEdge31CullRowCheckPassExit = 81,
+		BlockConvexAllZeroRow = 82,
+		BlockConvexRow00Cull = 83,
+		BlockConvexRow00CullNextScanRows = 84,
+		BlockConvexEdge24Cull = 85,
+		BlockConvexEdge24Check = 86,
 
-	BlockConvexEdge31Cull = 59,
-	BlockConvexEdge31CullRowCheck = 60,
-	BlockConvexEdge31CullRowCheckPass = 80,
-	BlockConvexEdge31CullRowCheckPassExit = 81,
-	BlockConvexAllZeroRow = 82,
-	BlockConvexRow00Cull = 83,
-	BlockConvexRow00CullNextScanRows = 84,
-	BlockConvexEdge24Cull = 85,
-	BlockConvexEdge24Check = 86,
+		BlockPrimitiveMaxLessThanMinCull = 61,
+		BlockMaskJointZeroCull = 62,
+		BlockMaxLessThanMinCull = 63,
+		BlockTotalPrimitives = 64,
 
-	BlockPrimitiveMaxLessThanMinCull = 61,
-	BlockMaskJointZeroCull = 62,
-	BlockMaxLessThanMinCull = 63,
-	BlockTotalPrimitives = 64,
-
-	BlockAABBClipToZero = 65,
-	BlockRenderPartial = 66,
-	BlockRenderFull = 67,
-	BlockRenderInitial = 68,
-	BlockRenderInitialPartial = 69,
-	BlockRenderInitialFull = 70,
+		BlockAABBClipToZero = 65,
+		BlockRenderPartial = 66,
+		BlockRenderFull = 67,
+		BlockRenderInitial = 68,
+		BlockRenderInitialPartial = 69,
+		BlockRenderInitialFull = 70,
 
 
-	BlockMinCompute4 = 90,
-	BlockMinUseOne = 91,
+		BlockMinCompute4 = 90,
+		BlockMinUseOne = 91,
 
 
-	BlockPacketID = 92,
-	BlockPacketPrimitive = 93,
-	BlockPacketPrimitiveDebug = 94,
+		BlockPacketID = 92,
+		BlockPacketPrimitive = 93,
+		BlockPacketPrimitiveDebug = 94,
 
 
 
 
 
 
-	BlockEmptyBlock = 110,
-	BlockMinValidDepth = 111,
+		BlockEmptyBlock = 110,
+		BlockMinValidDepth = 111,
 
 
-	RasterizedOccluderTotalTriangles = 115,
-	RasterizedOccluderTotalVertices = 116,
+		RasterizedOccluderTotalTriangles = 115,
+		RasterizedOccluderTotalVertices = 116,
 
 
-
+		OccludeeQuerySlowPath1 = 118,
+		OccludeeQuerySlowPath2 = 119,
 		OccludeeQueryMaxPass = 120,
 		OccluderQueryMaxPass = 121,
 		CurrentOccludeeIdx = 122,
@@ -183,6 +180,9 @@ namespace SDOCUtil
 		uint64_t PixelMinYMask[8];
 		uint64_t PixelMaxXMask[8];
 		uint64_t PixelMaxYMask[8];
+		// Pre-combined X-dimension LUT: CombinedXMask[startX][endX] = MinX & MaxX (512B, cache-friendly). 
+		// Contributed by vaderwang
+		uint64_t CombinedXMask[8][8];
 
 		void calculateMask();
 	};
@@ -493,12 +493,12 @@ private:
 	inline void updateBlock(__m128i* depthRows, uint64_t blockMask, __m128i* out, uint16_t* pBlockRowHiZ);
 	bool updateBlock_Occludee(__m128i* depthRows, uint64_t blockMask, __m128i* out, uint16_t* pBlockRowHiZ);
 #endif
-	void updateBlockMSCBPartial_Occludee(uint32_t* depth32, uint64_t blockMask, __m128i* out, OccluderRenderCache* cache);
+	void updateBlockMSCBPartial_Occludee(__m128i depthData, uint64_t blockMask, __m128i* out, OccluderRenderCache* cache);
 
 	
 
 
-	inline void updateBlockMSCBPartial(uint32_t * depth32, uint64_t blockMask, __m128i* out, uint64_t* maskData, uint16_t * pBlockRowHiZ, uint16_t maxBlockDepth);
+	inline void updateBlockMSCBPartial(__m128i depthData, uint64_t blockMask, __m128i* out, uint64_t* maskData, uint16_t * pBlockRowHiZ, uint16_t maxBlockDepth);
 	
 
 	//drawTriangle
@@ -528,7 +528,7 @@ public:
 	void configCoherent();
 
 
-
+	uint16_t mOccludeeMinDepthThreshold = 0;
 	uint16_t mCurrentOccludeeDepth = 0;
 
 
@@ -554,7 +554,6 @@ public:
 
 	std::vector<uint64_t> mAnyDataBlockMask;
 
-	__m128i *mQueryValidRegion = nullptr;
 private:
 	template <int PrimitveEdgeNum>
 	void HandleDrawMode(__m128* x, __m128* y, __m128* z, uint32_t alivePrimitive, OccluderRenderCache* occluderCache);

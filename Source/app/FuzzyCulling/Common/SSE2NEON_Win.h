@@ -248,6 +248,12 @@ inline __m128 _mm_shuffle_ps_3232_soc(__m128 a, __m128 b) {
 	return _mm_shuffle_ps(a, b, 238); //11101110
 }
 
+
+inline bool _mm_anymask_one_soc(const __m128i& a)
+{
+	return _mm_movemask_epi8(a) != 0;
+}
+
 inline __m128i _mm_srli_epi8(const __m128i &_A, int _Imm) {
 	return _mm_and_si128(_mm_set1_epi8(0xFF >> _Imm), _mm_srli_epi32(_A, _Imm));
 }

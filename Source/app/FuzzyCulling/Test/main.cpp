@@ -14,12 +14,9 @@
 #include <iostream>
 
 #include "SDOCReplayer.h"
-//#include <Windows.h>
 
 using namespace SDOCCommon;
 using namespace SDOCUtil;
-
-
 
 const char * getTextForEnum(int enumVal)
 {
@@ -55,7 +52,6 @@ const char * getTextForEnum(int enumVal)
 
 bool socReplay(const char *file_path, float* result, int config = 0, int frameNum = 0, uint64_t settingConfig = 0)
 {
-//	Sleep(3000);
 	void* pSDOC = sdocInit(1024, 512, 1.0f);
 	sdocSync(pSDOC, SDOC_Test_Result, result);
 	sdocSync(pSDOC, SDOC_Test_Config, &config);
@@ -64,16 +60,11 @@ bool socReplay(const char *file_path, float* result, int config = 0, int frameNu
 	return sdocSync(pSDOC, SDOC_Test_ReplayAndDestroy, (void*)file_path);
 }
 
-static int frameCount = 500;
-bool test(const char *file_path, float* result, int config = 0, int frameNum = 0, uint64_t settingConfig = 0)
+bool replayCaptureInDebugMode(const char *file_path, float* result, int config = 0, int frameNum = 0, uint64_t settingConfig = 0)
 {
-
 #ifdef SDOC_NATIVE_DEBUG
 	std::cout <<  getTextForEnum(config) << std::endl;
-
 	bool output = socReplay(file_path, result, config, frameNum, settingConfig);
-
-
 	std::cout << std::endl;
 	return output;
 #else
@@ -99,7 +90,6 @@ bool is_file_exist(std::string fileName)
 float decompressFloat(uint16_t depth)
 {
     const float bias = 3.9623753e+28f; // 1.0f / floatCompressionBias
-
     union {
         uint32_t u;
         float f;
@@ -115,7 +105,7 @@ int main(int argc, char **argv)
 		float d = decompressFloat(idx) - decompressFloat(idx - 1);
 			if (d > lagestDelta) lagestDelta = d;
 	}
-	std::cout << "Lagest Delta " << lagestDelta << " revert " << 1 / lagestDelta << std::endl;
+	std::cout << "largest Delta " << lagestDelta << " revert " << 1 / lagestDelta << std::endl;
 	std::cout << "check 65535 " << decompressFloat(65535) << std::endl;
 	union w {
 		int a;
@@ -128,7 +118,7 @@ int main(int argc, char **argv)
 
     
 	
-	frameCount = 1;
+	int frameCount = 1;
 
 
 	std::vector<std::string> allCaptures;
@@ -146,9 +136,15 @@ int main(int argc, char **argv)
 	bool quickCompare = true;
 	if (configManual) {
 
-		if (quickCompare)
+		developerGoldData += "all//";
+
+		//put your file in GOLDEN_DATA path
+		std::string developer_debug_capture = "";
+		if (developer_debug_capture != "") {
+			allCaptures.push_back(developer_debug_capture);
+		}
+		else if (quickCompare)
 		{
-			developerGoldData += "all//";
 			allCaptures.push_back("XYZDegenerate.cap");
 			allCaptures.push_back("SuntempSlope.cap");
 			allCaptures.push_back("SuntempleWindowBug.cap");
@@ -197,8 +193,6 @@ int main(int argc, char **argv)
         //    algos.push_back(2);
 #else
 #endif            
-			//algos.push_back(2);
-			//algos.push_back(3);
 			int compressMode = 0;
 			//algos.push_back(compressMode * 16 + 3); //pure triangle approach
 			int renderMode = 0;
@@ -230,10 +224,7 @@ int main(int argc, char **argv)
 				{
 					auto inputCap = developerGoldData + cap;
                     std::cout<<inputCap<<std::endl;
-					if(quickCompare)
-					{
-					//	quickVerify(inputCap.c_str());
-					}
+					
 					bool useReplayer = false;
 #if !defined(SDOC_NATIVE_DEBUG)
 					useReplayer = true;
@@ -242,14 +233,10 @@ int main(int argc, char **argv)
 					//SOC settings ******************************************
 					// on off interleave mode, 2 is coherent fast, 1 is coherent
 
-					uint64_t dumpDrawCall = 0; //set to 1 to dump per draw depth map
-					uint64_t focusDraw = -1;   //ignore all other draw calls, only submit the selected draw calls
+					uint64_t dumpDrawCall = 0;            //set to 1 to dump per draw depth map
+					uint64_t dumpDrawCallAccumulate =0;   //when dump per call, 1 to accumulate previous draw
 					
 					int approach = inputConfig & 7;
-					//focusDraw = 13;
-					if (focusDraw >= 0) {
-						dumpDrawCall = 0;
-					}
 
 					uint64_t compressMode = (inputConfig >> 4) & 1;
 					uint64_t renderMode = (inputConfig >> 11) & 7;
@@ -258,38 +245,32 @@ int main(int argc, char **argv)
 					uint64_t interleave = (inputConfig >> 8) & 3;;   // on off interleave mode
 
 					uint64_t CW = (inputConfig & 1024) / 1024;
-					replaySetting = ((focusDraw+1) << 16) 
-						| (CW << 60)
-						| (renderMode << 9)
-						| (compressMode << 8)
-						|(dumpDrawCall << 3)  | interleave;
+					replaySetting = (dumpDrawCallAccumulate << 16)
+							| (CW << 60)
+							| (renderMode << 9)
+							| (compressMode << 8)
+							|(dumpDrawCall << 3)  | interleave;
 					replaySetting |= rIdx << 32;
 					if (useReplayer) {
-						std::cout << "Android Demo Replay approach "  << std::endl;
 						auto result = TestSDOC(developerGoldData, cap);
 						std::cout << "Android Demo Replay approach " << result.c_str() << std::endl;
 						break;
 					}
-					else if (test(inputCap.c_str(), results, 1 << approach, frameCount, replaySetting))
+					else if (replayCaptureInDebugMode(inputCap.c_str(), results, 1 << approach, frameCount, replaySetting))
 					{
-						if (round == 1) {
-							float currentTime = results[0];
-							allTimes.push_back(currentTime);
-							std::string output = inputCap + " " + getTextForEnum(1 << approach);
-							output += "    Time " + std::to_string(results[0]) + " Query " + std::to_string((int)results[1]) + "/" + std::to_string((int)results[2]) + " occluderCulled " + std::to_string((int)results[3]) + "/" + std::to_string((int)results[4]);
-							//stress memory test, no need to store the results
-						
-								allResults.push_back(output);
-							if (approach <=6) {
+						float currentTime = results[0];
+						allTimes.push_back(currentTime);
+						std::string output = inputCap + " " + getTextForEnum(1 << approach);
+						output += "    Time " + std::to_string(results[0]) + " Query " + std::to_string((int)results[1]) + "/" + std::to_string((int)results[2]) + " occluderCulled " + std::to_string((int)results[3]) + "/" + std::to_string((int)results[4]);
+						allResults.push_back(output);
+						if (approach <=6) {
 
-								std::cout << " Compare with "<< getTextForEnum(1 << (algos[0] & 7)) <<" Ratio " << allTimes[(allTimes.size()-1) / totalAlgo * totalAlgo] / currentTime << std::endl;
-								std::cout << std::endl;
-								std::cout << std::endl;
-							}
+							std::cout << " Compare with "<< getTextForEnum(1 << (algos[0] & 7)) <<" Ratio " << allTimes[(allTimes.size()-1) / totalAlgo * totalAlgo] / currentTime << std::endl;
+							std::cout << std::endl;
+							std::cout << std::endl;
 						}
 					}
 					else {
-
 						std::cout << "Fail. Please Check " << std::endl;	
 						return -1;
 					}

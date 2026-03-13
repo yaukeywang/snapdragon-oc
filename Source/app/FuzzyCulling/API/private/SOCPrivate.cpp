@@ -1,4 +1,4 @@
-//============================================================================================================
+﻿//============================================================================================================
 //
 //
 //                  Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
@@ -16,6 +16,8 @@
 #include "../../Common/MathUtil.h"
 #include "../../Common/SOCUtil.h"
 
+#include <chrono>
+#include <iostream>
 
 #if defined(SDOC_ANDROID_ARM)
 #include <sys/stat.h>
@@ -551,13 +553,30 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 		}
 
 
-		void loadMatrix(std::ifstream& fin, float* matrix)
+		void loadMatrix(std::ifstream& fin, float* m)
 		{
 			std::string line;
 			for (unsigned int row = 0; row < 4; ++row)
 			{
-				fin >> matrix[row * 4 + 0] >> matrix[row * 4 + 1] >> matrix[row * 4 + 2] >> matrix[row * 4 + 3];
+				fin >> m[row * 4 + 0] >> m[row * 4 + 1] >> m[row * 4 + 2] >> m[row * 4 + 3];
 				std::getline(fin, line);
+			}
+
+			// Compute determinant of 3x3 matrix
+			float det =
+				m[0] * (m[5] * m[10] - m[6] * m[9]) -
+				m[1] * (m[4] * m[10] - m[6] * m[8]) +
+				m[2] * (m[4] * m[9] - m[5] * m[8]);
+			if (det == 0) {
+				std::cout << "error: ********************************************************************************************************" << std::endl;
+				std::cout << "error: ******************************************invalid rotation matrix***************************************" << std::endl;
+				float* p = m;
+				for (unsigned int row = 0; row < 4; ++row)
+				{
+					std::cout << p[0] << " " << p[1] << " " << p[2] << " " << p[3] << std::endl;
+					p += 4;
+				}
+				std::cout << "error: ********************************************************************************************************" << std::endl;
 			}
 		}
 
@@ -909,19 +928,9 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 	}
     bool SOCPrivate::replay(const char *file_path, int config, int frameNum, uint64_t replaySetting, float * replayResult)
 	{
-		static SDOCLoader* loader = nullptr;
 		LOGI("replay config %d", config);
-       
-
 		std::string inputPath = std::string(file_path);
-		
-
-        // create SDOCLoader if needed
-        loader = new  SDOCLoader();
-
-
-		// reset before replay
-		// first load, then save
+		SDOCLoader* loader = new  SDOCLoader();
 		if (!loader->load(file_path))
 		{
 			delete loader;
@@ -986,7 +995,7 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 		
 
 		int roundNum = 65535 & (replaySetting >> 32);
-		int focusDraw = (replaySetting << 32 >> 48) - 1;
+		int dumpDrawCallAccumulate = (replaySetting >> 16) & 1;
 		int loopCount = -1;
 		
 		start = std::chrono::high_resolution_clock::now();
@@ -999,14 +1008,12 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 		occluderStates[1] = new bool[maxResultSize];
 		memset(occluderStates[1], 0, sizeof(bool) * maxResultSize);
 
-		while (m_frameInfo->FrameCounter < ReplayMaxFrame)
+
+		SDOCLoader::CapturedFrameData* frame = loader->frame;
+		while (m_frameInfo->FrameCounter < ReplayMaxFrame  || (dumpPerDraw && loopCount < frame->Occluders.size()))
         {
 			loopCount++;
-			
-			SDOCLoader::CapturedFrameData* frame = loader->frame;
-			
 			CurrentDebugFrame = frame;
-
 			// start new frame
 			float *c = frame->CameraDir;
 			if (c[0] == 0 && c[1] == 0 && c[2] == 0) 
@@ -1020,19 +1027,15 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 			{
 				startNewFrame(frame->CameraPos, frame->CameraDir, frame->ViewProj);
 			}
-            // submit occluder
-			
-			if (loopCount > 0)
+
+            // submit occluder			
+			if (loopCount > 0 && dumpPerDraw == false)
 			{
 				m_rapidRasterizer->UsePrevFrameOccluders((int) frame->Occluders.size());
 				m_rapidRasterizer->OnRenderFinish();
 			}
 			else
 			{
-				//int count = 0;
-
-				int maxAllow = 9999;
-				
 
 				if (dumpPerDraw) 
 				{
@@ -1042,72 +1045,47 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 					}
 				}
 				totalOccluderNum = 0;
-				int drawIdx = 0;
 
-				
+				int skipTheDraw = -1; 
 				for (int occIdx = 0; occIdx < frame->Occluders.size(); occIdx++)
 				{
-					//std::cout << "occIdx " << occIdx << "  size " << frame->Occluders.size() << std::endl;
 					auto occ = frame->Occluders[occIdx];
-						bool submitDraw = true;
-						if (dumpPerDraw) 
-						{
-							if (drawIdx > loopCount) 
-							{
-								submitDraw = false;
-							}
+					bool submitDraw = occIdx != skipTheDraw;
+					if (dumpPerDraw)
+					{
+						if (dumpDrawCallAccumulate) {
+							submitDraw = occIdx <= loopCount;
 						}
-
-						if (focusDraw >= 0)
-						{
-							if (drawIdx != focusDraw) {
-								submitDraw = false;
-							}
+						else {
+							submitDraw = occIdx == loopCount;
 						}
+					}
 
-						//m_rapidRasterizer->EnableBackFaceCull(true);
-
-						if (submitDraw) {
-							if ( (compressMode == false) || (occ->CompactData == nullptr))
+					if (submitDraw) {
+						if ( (compressMode == false) || (occ->CompactData == nullptr))
+						{
 							{
-								{
-									if (occ->Indices == nullptr) {
-										this->m_frameInfo->submitOccluder((float*)(occ->CompactData), nullptr, 0, 0,  occ->localToWorld, true);
-									}
-									else {
-										this->m_frameInfo->submitOccluder(occ->Vertices, occ->Indices, occ->VerticesNum, occ->nIdx,  occ->localToWorld, occ->backfaceCull);
-
-										//this->m_frameInfo->submitOccluder(occ->Vertices, indices, occ->VerticesNum, 12, occ->modelAABB, occ->localToWorld, occ->backfaceCull);
-									}
+								if (occ->Indices == nullptr) {
+									this->m_frameInfo->submitOccluder((float*)(occ->CompactData), nullptr, 0, 0,  occ->localToWorld, true);
+								}
+								else {
+									this->m_frameInfo->submitOccluder(occ->Vertices, occ->Indices, occ->VerticesNum, occ->nIdx,  occ->localToWorld, occ->backfaceCull);
 								}
 							}
-							else 
-							{
-								this->m_frameInfo->submitOccluder((float*)(occ->CompactData), nullptr, 0, 0, occ->localToWorld, true);
-							}
-							totalOccluderNum++;
 						}
-
-						drawIdx++;
-					
-					maxAllow--;
-					if (maxAllow == 0) {
-						break;
+						else 
+						{
+							this->m_frameInfo->submitOccluder((float*)(occ->CompactData), nullptr, 0, 0, occ->localToWorld, true);
+						}
+						totalOccluderNum++;
 					}
 				}
 				m_rapidRasterizer->OnRenderFinish();
-
 			}
-
-
-
-
 
 			{
 				m_rapidRasterizer->SyncOccluderPVS(occluderStates[m_frameInfo->FrameCounter & 1]);
 			}
-
-			
 
 
 			bool enableMtTest = false;
@@ -1167,15 +1145,12 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 
 			if (dumpPerDraw) 
 			{
-				if (focusDraw >= 0 && loopCount != focusDraw) 
-				{
-					continue;
-				}
-
 				doDumpDepthMap(image, SDOCCommon::DumpImageMode::DumpFull);
 				std::string inputFile = std::string(file_path);
 				std::string result = inputFile.substr(0, inputFile.length() - 4) + "_" + std::to_string(config)+"_" +std::to_string(loopCount) + ".ppm";
 				dumpOccluderOccludeeColorImage(result, image, width, height);
+
+				LOGI(("Saving " + result).c_str());
 			}
 
 			if (loopCount == 5 && false)
@@ -1194,7 +1169,7 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 			int culled = 0;
 			for (int idx = 0; idx < loader->frame->Occluders.size(); idx++)
 			{
-				culled += !occluderStates[0][idx] && !occluderStates[1][idx];
+				culled += (int)( !occluderStates[0][idx] && !occluderStates[1][idx]);
 			}
 			std::cout << "****************** Occluder Culled " << culled << std::endl;
 			replayResult[3] = (float) culled;
@@ -1281,26 +1256,21 @@ void SOCPrivate::startNewFrame(const float *CameraPos, const float *ViewDir, con
 		}
 
 
-        //delete[] image;
 		LOGI("%d x %d", width, height);
-		//image = new unsigned char[m_depthWidth * m_depthHeight / 8 / 8]; // clear
 		if (false) {
 			for (int idx = SDOCCommon::DumpImageMode::DumpHiz;
 				idx <= SDOCCommon::DumpImageMode::DumpBlockMask; idx++)
 			{
 
 				doDumpDepthMap(image, (SDOCCommon::DumpImageMode) idx);
-
 				if (idx == SDOCCommon::DumpImageMode::DumpHiz)
 				{
 					dumpGrayImage(folderName + "depth" + std::to_string(config) + "Hiz.pgm", image, width / 8, height / 8);
-				}
-				
+				}				
 			}
 		}
 		
 		delete[] image;
-
 		delete[] allResults;
 
 		LOGI("Total Memory used %d", this->getMemoryByteUsage());
